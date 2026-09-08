@@ -85,14 +85,26 @@ actual relay ownership before routing messages.
 
 A Pending Pod is queued capacity, not a failed turn to replay. Failed, Unknown,
 NodeLost, deletion acceptance, and an absent Pod are not proof of termination.
-The recovery API requires terminated container state on the recorded Pod UID.
-A written fencing receipt alone is not an alternate API authorization path. Keep
+Ordinary recovery requires terminated container state on the recorded Pod UID.
+A written receipt alone does not authorize ordinary recovery. The separate privileged operator path below requires a fresh physical-node inspection. Keep
 the terminated Pod object until recovery has checked it; deleting it first makes
 that check impossible. Guest loss must not start a replacement on another node.
-Local PV node affinity keeps the retained home on its original guest. The recovery call must
+Local PV node affinity keeps the retained home on its original guest. Every recovery call must
 require the existing PVC, check its UID, and check its bound PV name when known.
 A missing, Lost, or substituted claim blocks recovery rather than creating an
 empty home. PVCs, ConfigMaps, and Secrets survive worker stop; cleanup is explicit.
+
+Recovery keeps the conversation's original native config and personality. The
+controller reads the recorded generation's immutable ConfigMap and verifies its
+ownership, content digest and binding to the exact recorded Pod before creating
+the replacement. New identities also record the ConfigMap UID; legacy identities
+use the recorded Pod's content binding. Missing or changed evidence blocks
+provisioning. A retry can use the recorded current generation's config as its
+anchor. It never copies old credentials or replaces the authoritative source.
+The new generation uses current transport addresses, credentials, image and
+resource limits. Fresh conversations use the latest global config and personality.
+Keep the prior Pod and ConfigMap until recovery has created and recorded the new
+generation, since both are needed to verify these pinned settings.
 
 New worker Pods explicitly tolerate the `node.kubernetes.io/not-ready` and
 `node.kubernetes.io/unreachable` `NoExecute` taints indefinitely. Their tolerations
@@ -183,7 +195,7 @@ kubectl -n "$cluster_namespace" get pod "$worker_pod" -o json > worker-pod-recei
 Compare `metadata.uid` with the controller's `identity.pod_uid`. Inspect every
 `status.containerStatuses[].state.terminated` and any init-container termination,
 not just the Pod phase. Record node, PVC UID, bound PV and exit reason. An absent
-Pod or a dead guest cannot satisfy the current recovery API.
+Pod or a dead guest cannot satisfy ordinary recovery.
 
 Inspect ingress and outbound attempts through read-only SQLite. An outbound result
 with `ambiguous: true`, or an attempt with no result, needs comparison against the
@@ -318,6 +330,40 @@ Then send a separate, specific follow-up. Recovery can also be requested with
 the operator bearer. `POST /conversations/{id}/park` has the same accepted-request
 semantics as the Discord park command. Neither endpoint removes the need to
 inspect queued messages, pending delegates, tool effects and termination.
+
+## Explicit operator recovery after original-node reboot
+
+If Kubernetes deleted a legacy Pod, ordinary Discord resume stays blocked. An
+operator who has actually observed the original guest stop and restart, inspected
+its returned runtime, and reconciled its effects can use the separate
+`POST /conversations/{cid}/recover-attested` endpoint with the operator bearer.
+This is an explicit trust in that operator's physical inspection. Receipt hashes
+bind submitted evidence; they are not cryptographic proof from Kubernetes.
+Do not manufacture historical Pod fields or infer a fence from absence alone.
+
+The JSON contract is defined by `recovery_attestation.validate` and rejects unknown
+fields. It requires schema_version 1, method `original-node-reboot`, exact
+expected_generation and prior_identity, and a reconciliation_note. `binding`
+contains node_name, node_uid, returned boot_id, pvc_uid, volume_name and config_uid.
+`home` contains the actual retained identity file's worker_id, generation,
+conversation_key, source, config_revision and personality_digest. Read that file
+from the original stopped home without starting Hermes or editing its identity.
+`inspection` contains a Unix observed_at within ten minutes, actual shutdown and
+start receipt SHA256 references, and explicit true results for node_ready,
+runtime_pod_uid_absent, sandbox_pod_uid_absent, pod_cgroup_absent and
+no_other_claimant. Inspect the exact old Pod UID across the returned node's runtime,
+sandboxes and cgroups, plus all current claim users. Keep raw evidence privately.
+
+The controller independently requires the old Pod to be absent, the original bound
+claim/PV and selected node, no active claim user, an immutable generation ConfigMap
+matching the inspected saved home, unchanged audience and no live owner connection.
+It atomically consumes the authorization with the generation change and keeps an
+audit record. A repeated request cannot create another generation. Provisioning
+rechecks namespace/configuration identities and can resume after controller restart
+without making a second physical assertion. It preserves the original home and
+configuration while rotating worker credentials. It never replays old tool calls.
+Do not use this endpoint for another node, substituted storage, an uncertain guest,
+or an unverified external effect.
 
 ## Snapshot and scheduler boundaries
 

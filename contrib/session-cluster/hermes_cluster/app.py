@@ -66,4 +66,19 @@ def create_app(controller):
             raise HTTPException(409, str(exc)) from exc
         return {"status": "queued"}
 
+    @app.post("/conversations/{cid}/recover-attested", dependencies=[Depends(operator)])
+    async def recover_attested(cid: str, request: Request):
+        from .kubernetes import KubernetesError
+        import json
+        data = bytearray()
+        async for chunk in request.stream():
+            if len(data) + len(chunk) > 32768:
+                raise HTTPException(413, "operator evidence too large")
+            data.extend(chunk)
+        try:
+            await controller.recover_attested(cid, json.loads(data))
+        except (OwnershipError, ValueError, TypeError, KubernetesError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return {"status": "queued"}
+
     return app

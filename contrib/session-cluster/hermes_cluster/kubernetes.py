@@ -40,6 +40,7 @@ class WorkerIdentity:
     secret_name: str
     pvc_uid: str
     volume_name: str | None = None
+    config_uid: str | None = None
 
 
 @dataclass(frozen=True)
@@ -66,15 +67,25 @@ def _conversation_key(conversation_id: str) -> str:
 
 def _terminated(pod: dict[str, Any]) -> bool:
     """Absent/evicted/Failed alone is not proof the old process stopped."""
-    status = pod.get("status", {})
-    states = status.get("containerStatuses", [])
-    expected = {c["name"] for c in pod.get("spec", {}).get("containers", [])}
-    return bool(expected) and expected == {c["name"] for c in states} and all(
-        "terminated" in c.get("state", {}) for c in states
-    ) and all(
-        "terminated" in c.get("state", {})
-        for c in status.get("initContainerStatuses", [])
-    )
+    spec, status = pod.get("spec", {}), pod.get("status", {})
+    if not spec.get("containers"):
+        return False
+    for specs, statuses in (("containers", "containerStatuses"),
+                            ("initContainers", "initContainerStatuses"),
+                            ("ephemeralContainers", "ephemeralContainerStatuses")):
+        expected = {c["name"] for c in spec.get(specs, [])}
+        states = status.get(statuses, [])
+        if (len(states) != len(expected) or expected != {c["name"] for c in states}
+                or not all("terminated" in c.get("state", {}) for c in states)):
+            return False
+    return True
+
+
+def _spec_signature(config_data, image, secret, resources, service_account):
+    return hashlib.sha256(json.dumps({
+        "config": config_data, "image": image, "secret": secret,
+        "resources": resources, "service_account": service_account,
+    }, sort_keys=True).encode()).hexdigest()
 
 
 class KubernetesBackend:
@@ -177,6 +188,101 @@ class KubernetesBackend:
             raise OwnershipConflict("Existing credential Secret differs; it was not overwritten")
         return name
 
+    async def retained_configuration(self, identity: WorkerIdentity) -> dict[str, Any]:
+        """Read pinned prompt inputs through the recorded Pod's content binding."""
+        key = _conversation_key(identity.conversation_id)
+        name = f"hsc-{key}-g{identity.generation}"
+        if identity.pod_name != name or identity.config_name != name:
+            raise OwnershipConflict("Retained configuration identity differs")
+        pod = await self._get("pods", identity.pod_name)
+        config = await self._get("configmaps", identity.config_name)
+        labels = {**MANAGED, LABEL: key, "hermes-cluster/role": "worker"}
+        if (pod is None or config is None or pod["metadata"]["uid"] != identity.pod_uid
+                or not config.get("immutable")
+                or (identity.config_uid and config["metadata"]["uid"] != identity.config_uid)
+                or any(obj.get("metadata", {}).get("ownerReferences") or any(
+                    obj.get("metadata", {}).get("labels", {}).get(k) != v for k, v in labels.items())
+                    for obj in (pod, config))):
+            raise OwnershipConflict("Retained Pod or immutable configuration cannot be verified")
+        try:
+            data = config["data"]
+            worker = json.loads(data["worker.json"])
+            native = yaml.safe_load(data["hermes.yaml"])
+            spec = pod["spec"]
+            container, = spec["containers"]
+            volumes = {v["name"]: v for v in spec["volumes"]}
+            if (not isinstance(native, dict) or not isinstance(worker, dict)
+                    or worker["worker_id"] != identity.conversation_id
+                    or worker["generation"] != identity.generation
+                    or not isinstance(worker["personality"], str)
+                    or volumes["config"]["configMap"]["name"] != identity.config_name
+                    or volumes["state"]["persistentVolumeClaim"]["claimName"] != identity.pvc_name
+                    or container["envFrom"] != [{"secretRef": {"name": identity.secret_name}}]):
+                raise ValueError("retained ownership mismatch")
+            revision = hashlib.sha256(json.dumps(native, sort_keys=True, separators=(",", ":"),
+                                                  ensure_ascii=False).encode()).hexdigest()
+            signature = _spec_signature(data, container["image"], identity.secret_name,
+                                        container["resources"], spec["serviceAccountName"])
+            if (worker["config_revision"] != revision
+                    or pod["metadata"]["annotations"]["hermes-cluster/spec-sha256"] != signature):
+                raise ValueError("retained content mismatch")
+        except (KeyError, TypeError, ValueError, yaml.YAMLError) as exc:
+            raise OwnershipConflict("Retained configuration content cannot be verified") from exc
+        return {"native_config": native, "worker_config": worker}
+
+    async def verify_absent_owner(self, identity: WorkerIdentity, binding: dict, *, allowed_pod=None) -> None:
+        """Namespace evidence complements, but cannot prove, the operator's node inspection."""
+        if await self._get("pods", identity.pod_name) is not None:
+            raise OwnershipConflict("Operator fencing requires the original Pod to be absent")
+        claim = await self._get("persistentvolumeclaims", identity.pvc_name)
+        if (claim is None or claim["metadata"]["uid"] != identity.pvc_uid
+                or binding["pvc_uid"] != identity.pvc_uid
+                or claim.get("metadata", {}).get("ownerReferences")
+                or claim.get("metadata", {}).get("labels", {}).get(LABEL) != _conversation_key(identity.conversation_id)
+                or claim.get("spec", {}).get("storageClassName") != self.storage_class
+                or claim.get("status", {}).get("phase") != "Bound"
+                or claim.get("spec", {}).get("volumeName") != binding["volume_name"]
+                or (identity.volume_name and identity.volume_name != binding["volume_name"])
+                or claim.get("metadata", {}).get("annotations", {}).get("volume.kubernetes.io/selected-node") != binding["node_name"]):
+            raise OwnershipConflict("Retained claim, volume or original node differs")
+        response = await self._request("GET", "/pods")
+        if response.status_code != 200:
+            raise KubernetesError("Cannot inspect current claim ownership")
+        for pod in response.json().get("items", []):
+            uses_claim = any(v.get("persistentVolumeClaim", {}).get("claimName") == identity.pvc_name
+                             for v in pod.get("spec", {}).get("volumes", []))
+            if uses_claim and pod["metadata"]["name"] != allowed_pod and not _terminated(pod):
+                raise OwnershipConflict("A current Pod still claims the retained volume")
+
+    async def operator_retained_configuration(self, identity: WorkerIdentity, home: dict, config_uid: str) -> dict:
+        """Bind current immutable config to an operator-inspected saved home, not a fabricated Pod."""
+        key = _conversation_key(identity.conversation_id)
+        name = f"hsc-{key}-g{identity.generation}"
+        config = await self._get("configmaps", identity.config_name)
+        labels = {**MANAGED, LABEL: key, "hermes-cluster/role": "worker"}
+        if (identity.config_name != name or identity.pod_name != name or config is None
+                or config["metadata"]["uid"] != config_uid
+                or (identity.config_uid and identity.config_uid != config_uid)
+                or not config.get("immutable") or config.get("metadata", {}).get("ownerReferences")
+                or any(config.get("metadata", {}).get("labels", {}).get(k) != v for k, v in labels.items())):
+            raise OwnershipConflict("Operator-inspected immutable config identity differs")
+        try:
+            data = config["data"]
+            worker = json.loads(data["worker.json"])
+            native = yaml.safe_load(data["hermes.yaml"])
+            if not isinstance(native, dict) or not isinstance(worker, dict):
+                raise ValueError("configuration must be objects")
+            revision = hashlib.sha256(json.dumps(native, sort_keys=True, separators=(",", ":"),
+                                                  ensure_ascii=False).encode()).hexdigest()
+            if (worker["worker_id"] != identity.conversation_id or worker["generation"] != identity.generation
+                    or any(worker[k] != home[k] for k in ("worker_id", "generation", "conversation_key", "source", "config_revision"))
+                    or revision != home["config_revision"]
+                    or hashlib.sha256(worker["personality"].encode()).hexdigest() != home["personality_digest"]):
+                raise ValueError("saved-home identity does not match immutable config")
+        except (KeyError, TypeError, ValueError, AttributeError, yaml.YAMLError) as exc:
+            raise OwnershipConflict("Operator-inspected configuration content differs") from exc
+        return {"native_config": native, "worker_config": worker, "config_data": data, "config_uid": config_uid}
+
     async def create_worker(
         self,
         conversation_id: str,
@@ -187,6 +293,7 @@ class KubernetesBackend:
         require_existing_claim: bool = False,
         expected_claim_uid: str | None = None,
         expected_volume_name: str | None = None,
+        native_config: dict[str, Any] | None = None,
     ) -> WorkerIdentity:
         if type(generation) is not int or not 1 <= generation <= 999999999:
             raise ValueError("generation must be a positive bounded integer")
@@ -197,12 +304,10 @@ class KubernetesBackend:
         labels = {**MANAGED, LABEL: key, "hermes-cluster/role": "worker"}
         config_data = {
             "worker.json": json.dumps(worker_config, sort_keys=True, separators=(",", ":")),
-            "hermes.yaml": yaml.safe_dump(self.hermes_config, sort_keys=True),
+            "hermes.yaml": yaml.safe_dump(self.hermes_config if native_config is None else native_config, sort_keys=True),
         }
-        signature = hashlib.sha256(json.dumps({
-            "config": config_data, "image": self.image, "secret": credential_ref,
-            "resources": self.resources, "service_account": self.worker_service_account,
-        }, sort_keys=True).encode()).hexdigest()
+        signature = _spec_signature(config_data, self.image, credential_ref, self.resources,
+                                    self.worker_service_account)
         response = await self._request("GET", "/pods", params={"labelSelector": f"{LABEL}={key}"})
         if response.status_code != 200:
             raise KubernetesError("Cannot verify existing conversation ownership")
@@ -283,7 +388,7 @@ class KubernetesBackend:
             raise OwnershipConflict("Pod name exists with a different worker specification")
         return WorkerIdentity(conversation_id, generation, name, pod["metadata"]["uid"],
                               pvc_name, name, credential_ref, pvc["metadata"]["uid"],
-                              pvc.get("spec", {}).get("volumeName"))
+                              pvc.get("spec", {}).get("volumeName"), config["metadata"]["uid"])
 
     async def status(self, identity: WorkerIdentity) -> WorkerStatus:
         pod = await self._get("pods", identity.pod_name)

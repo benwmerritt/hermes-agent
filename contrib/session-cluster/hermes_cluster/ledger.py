@@ -85,6 +85,10 @@ class Ledger:
               id INTEGER PRIMARY KEY, at REAL NOT NULL, conversation_id TEXT,
               event TEXT NOT NULL, detail TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS recovery_fences (
+              conversation_id TEXT NOT NULL, target_generation INTEGER NOT NULL,
+              evidence TEXT NOT NULL, PRIMARY KEY(conversation_id,target_generation)
+            );
         """)
 
     @contextmanager
@@ -127,6 +131,12 @@ class Ledger:
                 "SELECT 1 FROM audit WHERE conversation_id=? AND event='park_requested' "
                 "AND json_extract(detail,'$.generation')=? LIMIT 1",
                 (conversation_id, generation)).fetchone() is not None
+
+    def recovery_fence(self, conversation_id: str, target_generation: int):
+        with self.lock:
+            row = self.db.execute("SELECT evidence FROM recovery_fences WHERE conversation_id=? AND target_generation=?",
+                                  (conversation_id, target_generation)).fetchone()
+            return json.loads(row[0]) if row else None
 
     def admit(self, *, agent_id: str, native_key: str, source: dict, audience: str,
               event_id: str, payload: dict, actor: str) -> tuple[dict, bool]:
@@ -281,14 +291,23 @@ class Ledger:
                            (event_id, row["id"], canonical(payload), time.time(), time.time()))
             return self._row(row)
 
-    def prepare_recovery(self, cid: str, generation: int, note: str):
-        """Caller must first verify the retained Pod's terminated container state."""
+    def prepare_recovery(self, cid: str, generation: int, note: str, *, operator_fence=None):
+        """Caller must verify live termination or validate an explicit operator fence."""
         if len(note.strip()) < 10:
             raise ValueError("record how uncertain actions were reconciled before recovery")
         with self.transaction() as db:
             row = db.execute("SELECT * FROM conversations WHERE id=? AND generation=?", (cid, generation)).fetchone()
             if not row or row["status"] not in ("stopped", "recovery_required", "unavailable"):
                 raise OwnershipError("conversation is not eligible for deliberate recovery")
+            if operator_fence is not None:
+                if json.loads(row["identity"] or "null") != operator_fence["prior_identity"]:
+                    raise OwnershipError("retained identity changed before fencing authorization")
+                db.execute("INSERT INTO recovery_fences VALUES(?,?,?)",
+                           (cid, generation + 1, canonical(operator_fence)))
+                db.execute("INSERT INTO audit(at,conversation_id,event,detail) VALUES(?,?,?,?)",
+                           (time.time(), cid, "operator_fence_consumed", canonical({
+                               "generation": generation, "method": "original-node-reboot",
+                               "evidence_sha256": operator_fence["evidence_sha256"]})))
             db.execute("UPDATE ingress SET status='interrupted',updated=? WHERE conversation_id=? AND status='dispatched'", (time.time(), cid))
             db.execute("UPDATE prompts SET response='interrupted' WHERE conversation_id=? AND response IS NULL", (cid,))
             db.execute("UPDATE conversations SET generation=generation+1,status='queued',relay_secret=?,knowledge_token=?,detail=?,updated=? WHERE id=?",

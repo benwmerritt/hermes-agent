@@ -98,13 +98,35 @@ class Controller:
             raise OwnershipError("worker was fenced while preparing credentials")
         old = owner["identity"]
         kwargs = {}
+        worker_config = self.worker_config(owner)
         if owner["generation"] > 1:
             if not old or not old.get("pvc_uid"):
                 raise OwnershipError("recovery lacks retained claim identity")
             kwargs = {"require_existing_claim": True, "expected_claim_uid": old["pvc_uid"],
                       "expected_volume_name": old.get("volume_name")}
+        if old:
+            if old["generation"] > owner["generation"]:
+                raise OwnershipError("retained configuration is from a future generation")
+            fence = self.ledger.recovery_fence(owner["id"], owner["generation"])
+            if fence and old == fence["prior_identity"]:
+                from .kubernetes import _conversation_key
+                target = f'hsc-{_conversation_key(owner["id"])}-g{owner["generation"]}'
+                await self.backend.verify_absent_owner(WorkerIdentity(**old), fence["binding"], allowed_pod=target)
+                pinned = await self.backend.operator_retained_configuration(
+                    WorkerIdentity(**old), fence["home"], fence["binding"]["config_uid"])
+            else:
+                pinned = await self.backend.retained_configuration(WorkerIdentity(**old))
+            prior = pinned["worker_config"]
+            if any(prior.get(key) != worker_config[key] for key in
+                   ("worker_id", "conversation_key", "source", "allowed_user_ids")):
+                raise OwnershipError("retained configuration belongs to another conversation")
+            worker_config.update(config_revision=prior["config_revision"], personality=prior["personality"])
+            kwargs["native_config"] = pinned["native_config"]
+            current = self.ledger.get(owner["id"])
+            if current["generation"] != owner["generation"] or current["status"] != "provisioning":
+                raise OwnershipError("worker was fenced while reading retained configuration")
         identity = await self.backend.create_worker(owner["id"], owner["generation"],
-                                                     self.worker_config(owner), secret_name, **kwargs)
+                                                     worker_config, secret_name, **kwargs)
         current = self.ledger.get(owner["id"])
         self.ledger.transition(owner["id"], owner["generation"], current["status"], identity=asdict(identity),
                                detail="Pod created; waiting for the retained worker to connect" if current["status"] == "provisioning" else current["detail"])
@@ -305,6 +327,29 @@ class Controller:
                 raise OwnershipError("old owner termination has not been proved; node absence is not a fence")
             self.ledger.prepare_recovery(cid, owner["generation"], note)
             self.knowledge.revoke_worker(cid, owner["generation"])
+        self.wake.set()
+
+    async def recover_attested(self, cid, body):
+        """Privileged physical-fence authorization; not reachable from Discord controls."""
+        from .recovery_attestation import validate
+        async with self.operations:
+            owner = self.ledger.get(cid)
+            if not owner or not owner["identity"] or cid in self.connections:
+                raise OwnershipError("retained disconnected owner is required")
+            if owner["status"] not in ("stopped", "recovery_required", "unavailable"):
+                raise OwnershipError("conversation is not eligible for operator recovery")
+            evidence = validate(owner, body)
+            identity = WorkerIdentity(**owner["identity"])
+            await self.backend.verify_absent_owner(identity, evidence["binding"])
+            await self.backend.operator_retained_configuration(identity, evidence["home"], evidence["binding"]["config_uid"])
+            if await self.connector.audience(owner["source"]) != owner["audience"]:
+                raise OwnershipError("audience changed; restore its permissions before recovery")
+            if cid in self.connections:
+                raise OwnershipError("old owner reconnected during inspection")
+            # Revoke before authorizing a replacement. A revocation failure leaves
+            # the old generation in place and does not consume its evidence.
+            self.knowledge.revoke_worker(cid, owner["generation"])
+            self.ledger.prepare_recovery(cid, owner["generation"], evidence["reconciliation_note"], operator_fence=evidence)
         self.wake.set()
 
     async def fence_owner(self, owner, reason):
