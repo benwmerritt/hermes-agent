@@ -534,6 +534,13 @@ def session_search(query: str = "", role_filter: str = None, limit: int = 3, db=
                    current_session_id: str = None, session_id: str = None, around_message_id: int = None,
                    window: int = 5, sort: str = None, profile: str = None, detail: str = "adaptive") -> str:
     """Run session search, closing DBs opened here. Positional order is frozen for old callers."""
+    from agent.knowledge_backend import get_knowledge_backend
+    backend = get_knowledge_backend()
+    if backend is not None:
+        return backend.search_history({"query": query, "role_filter": role_filter, "limit": limit,
+            "current_session_id": current_session_id, "session_id": session_id,
+            "around_message_id": around_message_id, "window": window, "sort": sort,
+            "profile": profile, "detail": detail})
     from hermes_state import format_session_db_unavailable
     from hermes_state_registry import acquire, release_or_close
     owned_dbs: List[Any] = []

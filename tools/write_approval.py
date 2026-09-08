@@ -76,6 +76,9 @@ def stage_write(subsystem: str, payload: Dict[str, Any], *, summary: str, origin
     Best-effort: on disk failure it logs and still returns a record — the write is lost, which is
     the safe failure for an approval gate (nothing silently committed)."""
     pid = uuid.uuid4().hex[:8]
+    from agent.knowledge_backend import get_knowledge_backend
+    if get_knowledge_backend() is not None:
+        payload = {**payload, "_authority_operation_id": str(uuid.uuid4())}
     record = {
         "id": pid, "subsystem": subsystem, "action": payload.get("action", ""),
         "summary": (summary or "").strip(), "origin": origin or "foreground",

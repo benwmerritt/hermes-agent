@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68,<84"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-session-cluster"
+version = "0.1.0"
+description = "A retained conversation worker controller for Hermes"
+requires-python = ">=3.11,<3.14"
+dependencies = ["hermes-agent==0.21.1"]
+
+[tool.setuptools.packages.find]
+include = ["hermes_cluster", "hermes_cluster.*"]

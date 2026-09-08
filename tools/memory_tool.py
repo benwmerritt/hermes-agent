@@ -44,19 +44,29 @@ from tools.memory_tool_store import (  # noqa: E402,F401  (re-exports)
     ENTRY_DELIMITER, MEMORY_BLOCK_HEADERS, MemoryStore, _scan_memory_content)
 
 
+def create_memory_store(*args, **kwargs):
+    """Resolve an optional authority before constructing the native disk store."""
+    from agent.knowledge_backend import get_knowledge_backend
+    backend = get_knowledge_backend()
+    return backend.create_memory_store(*args, **kwargs) if backend else MemoryStore(*args, **kwargs)
+
+
 def load_on_disk_store() -> "MemoryStore":
     """Fresh on-disk MemoryStore with configured limits/flags for contexts with no live
     agent (gateway, Desktop, ``/memory``) so approvals enforce the SAME caps as
-    ``agent_init``. Falls back to defaults if config can't load; never raises."""
+    ``agent_init``. Local stores tolerate missing config; an explicit authority fails closed."""
+    from agent.knowledge_backend import get_knowledge_backend
     try:
         from hermes_cli.config import load_config
         config = load_config() or {}
         mem_cfg = get_builtin_memory_config(config)
         memory_enabled, user_profile_enabled = get_builtin_memory_store_flags(config)
-        store = MemoryStore(int(mem_cfg.get("memory_char_limit", 2200)), int(mem_cfg.get("user_char_limit", 1375)),
-                            memory_enabled=memory_enabled, user_profile_enabled=user_profile_enabled)
+        limits = (int(mem_cfg.get("memory_char_limit", 2200)), int(mem_cfg.get("user_char_limit", 1375)))
     except Exception:
-        store = MemoryStore()  # config optional — fall back to defaults rather than break /memory
+        if get_knowledge_backend() is not None:
+            raise  # Config is part of the authority contract; never silently change its gates.
+        limits, memory_enabled, user_profile_enabled = (2200, 1375), True, True
+    store = create_memory_store(*limits, memory_enabled=memory_enabled, user_profile_enabled=user_profile_enabled)
     store.load_from_disk()
     return store
 
@@ -201,6 +211,10 @@ def _memory_target_error(store: "MemoryStore", target: str) -> Optional[Dict[str
 
 def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[str, Any]:
     """Replay a staged write against the store, bypassing the gate (/memory approve)."""
+    from agent.knowledge_backend import approved_knowledge_replay
+    replayed = approved_knowledge_replay(payload, lambda: apply_memory_pending(payload, store))
+    if replayed is not None:
+        return replayed
     action, target = payload.get("action"), payload.get("target", "memory")
     target_error = _memory_target_error(store, target)
     if target_error is not None:

@@ -1,0 +1,8 @@
+# Install once with cluster-admin. Does not change the cluster's default class.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: hermes-session-local
+provisioner: rancher.io/local-path
+reclaimPolicy: Retain
+volumeBindingMode: WaitForFirstConsumer

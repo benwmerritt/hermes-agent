@@ -232,6 +232,9 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
 def _find_skill_in_other_profiles(name: str) -> List[Tuple[str, Path]]:
     """``(profile, skill_dir)`` pairs for OTHER profiles holding ``name`` (so the not-found
     error can explain a wrong-profile mistake). Fail-quiet."""
+    from agent.knowledge_backend import get_knowledge_backend, staging
+    if staging.get() or get_knowledge_backend() is not None:
+        return []  # An authority-scoped worker cannot reveal other profiles in error hints.
     matches: List[Tuple[str, Path]] = []
     try:
         from hermes_constants import get_default_hermes_root
@@ -624,6 +627,10 @@ def _skill_manage_from(payload: Dict[str, Any], **extra) -> str:
 
 def apply_skill_pending(payload: Dict[str, Any]) -> str:
     """Replay a staged skill write, bypassing the gate (the /skills approve handler)."""
+    from agent.knowledge_backend import approved_knowledge_replay
+    replayed = approved_knowledge_replay(payload, lambda: apply_skill_pending(payload))
+    if replayed is not None:
+        return replayed if isinstance(replayed, str) else json.dumps(replayed)
     token = _skill_gate_bypass.set(True)
     try:
         return _skill_manage_from(payload)
@@ -696,6 +703,9 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
                     session_id, ledger_before) -> None:
     """Best-effort post-mutation side effects (never break the tool): ledger, prompt-cache
     clear, curator telemetry, debounced sync push."""
+    from agent.knowledge_backend import staging
+    if staging.get():
+        return
     with suppress(Exception):
         from tools import skill_ledger as _ledger
         _post = _find_skill(name)
@@ -751,6 +761,11 @@ def skill_manage(
                 absorbed_into=absorbed_into)
     if (gate_result := _apply_skill_write_gate(action, name, **args)) is not None:
         return gate_result
+    from agent.knowledge_backend import authoritative_skill_mutation
+    shared_result = authoritative_skill_mutation({"action": action, "name": name, **args,
+                                                  "task_id": task_id, "session_id": session_id})
+    if shared_result is not None:
+        return shared_result
     # Ledger pre-capture: telemetry, not a gate — failures must NEVER block the mutation. delete
     # destroys the whole package (consolidation may have re-homed support files first), so
     # complete it from the newest curator backup or a restore is hollow.

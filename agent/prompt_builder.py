@@ -1205,6 +1205,10 @@ def build_skills_system_prompt(
     ``skills_dir_override`` makes home resolution EXPLICIT: a build thread that never bound the HERMES_HOME
     ContextVar would otherwise leak the default profile's skills into a bot's prompt.
     """
+    from agent.knowledge_backend import get_knowledge_backend
+    backend = get_knowledge_backend(Path(skills_dir_override).parent if skills_dir_override else None)
+    if backend is not None:
+        skills_dir_override = backend.prompt_skills_dir
     _home_token = None
     if skills_dir_override is not None:
         skills_dir = Path(skills_dir_override)

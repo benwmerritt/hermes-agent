@@ -1568,6 +1568,7 @@ class RelayAdapter(BasePlatformAdapter):
                 "chat_id": chat_id,
                 "message_id": message_id,
                 "content": content,
+                "finalize": finalize,
                 "metadata": self._text_metadata(chat_id, metadata),
             },
         )
@@ -2100,8 +2101,7 @@ class RelayAdapter(BasePlatformAdapter):
             if handler is None:
                 logger.warning("relay prompt_response with unknown kind %r", kind)
             else:
-                # Acks are fire-and-forget: we are ON the read loop here (see
-                # _send_lifecycle_ack) and awaiting a send would self-deadlock.
+                # Cosmetic acknowledgments must not delay subsequent inbound controls.
                 await handler(self, state, option_id, chat_id, self._prompt_reply_metadata(event))
         except Exception:  # noqa: BLE001 - a resolver failure must not kill the reader
             logger.warning("relay prompt_response resolution failed", exc_info=True)
@@ -2151,12 +2151,12 @@ class RelayAdapter(BasePlatformAdapter):
             mark_awaiting_text(clarify_id)
 
     def _send_lifecycle_ack(self, chat_id: str, text: str, metadata: Dict[str, Any]) -> None:
-        """Fire-and-forget a prompt-lifecycle ack from read-loop context.
-        _consume_prompt_response executes ON the transport read loop; an ``await
-        self.send(...)`` there is a SELF-DEADLOCK (send() blocks on an outbound_result
-        future only the read loop can resolve) — every button tap wedged the transport
-        for the full outbound timeout. Acks are cosmetic, so they ride a background
-        task; failures log at debug. The task ref is retained (asyncio holds tasks weakly)."""
+        """Send cosmetic acknowledgments without blocking ordered inbound admission.
+
+        Transports dispatch inbound separately from response frames, but waiting
+        for this acknowledgment would still delay the next control. Retain the
+        task because asyncio holds tasks weakly; failures log at debug.
+        """
 
         async def _ack() -> None:
             try:

@@ -144,6 +144,11 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
         staged = _smt._run_write_gate(_staging)
         if staged is not None:
             return staged
+    from agent.knowledge_backend import authoritative_skill_mutation
+    shared_result = authoritative_skill_mutation({"action": "batch", "name": default_name,
+        "operations": operations, "task_id": task_id, "session_id": session_id})
+    if shared_result is not None:
+        return shared_result
     snap_root = Path(tempfile.mkdtemp(prefix="skill_batch_"))
     snapshots, snap_err = _snapshot_skills(names, snap_root, _smt._find_skill)
     if snap_err is not None:

@@ -1,0 +1,103 @@
+name: Session cluster image
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/wrk-162-distributed-hermes]
+    paths:
+      - .github/workflows/session-cluster.yml
+      - Dockerfile
+      - pyproject.toml
+      - uv.lock
+      - agent/**
+      - gateway/**
+      - tools/**
+      - contrib/session-cluster/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: session-cluster-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    if: github.repository == 'benwmerritt/hermes-agent'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/benwmerritt/hermes-session-cluster
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Prepare exact source build
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 scripts/ci/check_profile_archive_boundary.py
+          cat Dockerfile contrib/session-cluster/Dockerfile > "$RUNNER_TEMP/session-cluster.Dockerfile"
+          df -h . "$RUNNER_TEMP"
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build AMD64 image and OCI recovery artifact
+        id: build
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: .
+          file: ${{ runner.temp }}/session-cluster.Dockerfile
+          target: session_cluster
+          platforms: linux/amd64
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+          build-args: HERMES_GIT_SHA=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          load: true
+          outputs: type=oci,dest=${{ runner.temp }}/session-cluster.oci.tar
+          provenance: false
+          sbom: false
+      - name: Smoke test unprivileged Python runtime
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --entrypoint python "$IMAGE:$GITHUB_SHA" -c '
+          import os, sqlite3
+          from hermes_cluster import kubernetes, worker, knowledge
+          from hermes_cluster import __main__
+          assert os.getuid() == 10000
+          assert sqlite3.sqlite_version_info >= (3, 53, 2)
+          print("Companion imports, non-root UID, SQLite", sqlite3.sqlite_version)
+          '
+          docker run --rm --network none --entrypoint python "$IMAGE:$GITHUB_SHA" -m hermes_cluster --help
+          docker run --rm --network none --entrypoint python "$IMAGE:$GITHUB_SHA" -m hermes_cluster.worker --help
+          (cd "$RUNNER_TEMP" && sha256sum session-cluster.oci.tar > session-cluster.oci.tar.sha256)
+          printf '%s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/source-commit.txt"
+      - name: Retain OCI fallback before registry publication
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: session-cluster-oci-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/session-cluster.oci.tar
+            ${{ runner.temp }}/session-cluster.oci.tar.sha256
+            ${{ runner.temp }}/source-commit.txt
+          compression-level: 0
+          retention-days: 2
+          if-no-files-found: error
+      - name: Authenticate to GHCR
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish exact commit tag
+        run: |
+          set -euo pipefail
+          docker push "$IMAGE:$GITHUB_SHA"
+          docker inspect "$IMAGE:$GITHUB_SHA" --format '{{json .RepoDigests}}' > "$RUNNER_TEMP/registry-digests.json"
+          {
+            echo 'Image pushed. Use the registry digest for deployment:'
+            cat "$RUNNER_TEMP/registry-digests.json"
+          } >> "$GITHUB_STEP_SUMMARY"
