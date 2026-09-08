@@ -116,6 +116,8 @@ class KnowledgeRuntime:
             if any(r["kind"] == "skill" and r["key"] in names and r["audience"] != self.snapshot["audience"]
                    for r in self.resources.values()):
                 return json.dumps({"success": False, "error": "read-only audience skill cannot be modified"})
+            from .skill_audit import capture_before, record_accepted
+            captured = capture_before(names)
             token = staging.set(True)
             gate_token = smt._skill_gate_bypass.set(True)
             try:
@@ -149,6 +151,7 @@ class KnowledgeRuntime:
                 self.accept(receipt)
             except Exception as exc:
                 return json.dumps({"success": False, "error": f"Shared skill write failed: {exc}"})
+            record_accepted(receipt, before, captured, payload)
             result["receipt"] = receipt["mutation_id"]
             if "path" in result:
                 result["path"] = str(self.home / "skills" / names[0])
@@ -211,7 +214,13 @@ def bootstrap_knowledge(*, url, token, hermes_home, snapshot_id=None):
         if skills.exists():
             if skills.is_symlink():
                 raise KnowledgeError("skill projection cannot be a symlink")
-            shutil.rmtree(skills)
+            for child in skills.iterdir():
+                if child.name.startswith("."):
+                    continue  # Native audit and usage metadata belong to the retained worker.
+                if child.is_dir() and not child.is_symlink():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
         runtime.accept({"resources": client.accepted_resources()})
         from utils import atomic_write_text
         atomic_write_text(pin_path, encode({"snapshot_id": snapshot["snapshot_id"]}))

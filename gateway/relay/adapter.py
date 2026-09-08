@@ -777,6 +777,7 @@ class RelayAdapter(BasePlatformAdapter):
         # Only the production WebSocket transport exposes `auth_revoked`.
         if hasattr(self._transport, "auth_revoked"):
             self._start_revocation_monitor()
+        self._mark_connected()
         return True
 
     def _start_revocation_monitor(self) -> None:
@@ -1192,6 +1193,7 @@ class RelayAdapter(BasePlatformAdapter):
         return parts
 
     async def disconnect(self) -> None:
+        self._mark_disconnected()
         # The runner wraps this call in wait_for(adapter disconnect budget). Monitor
         # teardown and go_idle eat into the transport's drain time, so measure from
         # the top and thread the REMAINDER down — otherwise teardown is cancelled

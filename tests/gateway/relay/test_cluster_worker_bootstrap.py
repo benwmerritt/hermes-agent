@@ -70,6 +70,12 @@ with claim_home(config):
         pass
     assert prompt_id in adapter._pending_prompts
     assert runner._session_db is not None
+    from gateway import delivery_ledger as dl
+    dl.record_obligation(obligation_id="uncertain-final", session_key=policy.key,
+        platform="relay", chat_id="thread", thread_id="thread", content="retained complete answer")
+    dl.mark_attempting("uncertain-final")
+    with dl._connect() as db:
+        db.execute("UPDATE delivery_obligations SET owner_pid=999999999, owner_started_at=1")
     import json
     import os
     import websockets
@@ -92,6 +98,11 @@ with claim_home(config):
                 assert await asyncio.wait_for(runner.start(), timeout=20)
                 assert runner._running
                 assert isinstance(runner.adapters[Platform.RELAY], ConversationRelayAdapter)
+                assert runner.adapters[Platform.RELAY].is_connected
+                assert await runner._redeliver_failed_obligations_for_platform(Platform.RELAY) == 0
+                with dl._connect() as db:
+                    row = db.execute("SELECT state, attempts, content FROM delivery_obligations WHERE obligation_id='uncertain-final'").fetchone()
+                assert tuple(row) == ("attempting", 0, "retained complete answer"), row
             finally:
                 await asyncio.wait_for(runner.stop(), timeout=20)
     asyncio.run(exercise_native_start())

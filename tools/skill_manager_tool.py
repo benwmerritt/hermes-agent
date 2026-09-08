@@ -700,7 +700,8 @@ _REQUIRED_ARGS = {
 
 
 def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
-                    session_id, ledger_before) -> None:
+                    session_id, ledger_before, refresh_prompt=True, push_sync=True,
+                    extra_evidence=None) -> None:
     """Best-effort post-mutation side effects (never break the tool): ledger, prompt-cache
     clear, curator telemetry, debounced sync push."""
     from agent.knowledge_backend import staging
@@ -713,12 +714,14 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
         _evidence = ({"absorbed_into": absorbed_into, "archived": bool(result.get("_archived"))}
                      if action == "delete" else {})
         _evidence.update({k: v for k, v in (("session_id", session_id), ("file_path", file_path)) if v})
+        _evidence.update(extra_evidence or {})
         _ledger.record_mutation(
             action, name, before=ledger_before if ledger_before is not None else [],
             after_root=_post["path"] if _post else None, evidence=_evidence)
-    with suppress(Exception):
-        from agent.prompt_builder import clear_skills_system_prompt_cache
-        clear_skills_system_prompt_cache(clear_snapshot=True)
+    if refresh_prompt:
+        with suppress(Exception):
+            from agent.prompt_builder import clear_skills_system_prompt_cache
+            clear_skills_system_prompt_cache(clear_snapshot=True)
     # Curator telemetry: only the background review fork marks a skill agent-created
     # (foreground creates belong to the user). A recoverable curator archive keeps its
     # record as STATE_ARCHIVED (`hermes curator status`/`restore`); only a hard delete forgets.
@@ -738,8 +741,9 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
         elif action == "delete" and not result.get("_archived"):
             forget(name)
     # Only AFTER the write gate passed (staged writes returned early): never push un-reviewed content.
-    with suppress(Exception):
-        _maybe_debounced_sync_push(name)
+    if push_sync:
+        with suppress(Exception):
+            _maybe_debounced_sync_push(name)
 
 
 def skill_manage(

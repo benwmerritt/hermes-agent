@@ -46,7 +46,7 @@ def main():
         config["native_config"] = yaml.safe_load(Path(config["native_config_path"]).read_text(encoding="utf-8"))
         backend = KubernetesBackend(config["namespace"], config["image"], hermes_config=config["native_config"],
                                      resources=config.get("worker_resources"))
-        knowledge = KnowledgeStore(root / "knowledge.sqlite")
+        knowledge = KnowledgeStore(root / "knowledge.sqlite", max_bytes=config.get("knowledge_max_bytes", 512 * 1024 * 1024))
         controller = Controller(config, backend, knowledge)
         uvicorn.run(create_app(controller), host="0.0.0.0", port=8080, access_log=False,
                     limit_concurrency=64, ws_max_size=1024 * 1024, timeout_graceful_shutdown=40)

@@ -158,6 +158,7 @@ def test_native_approval_denial_and_idempotent_replay(authority, tmp_path, monke
     from tools.memory_tool import create_memory_store, memory_tool, apply_memory_pending
     from tools.skill_manager_tool import skill_manage, apply_skill_pending
     from tools import write_approval as wa
+    from tools.skill_ledger import list_entries
     runtime = make_runtime(authority, tmp_path, monkeypatch, "approved", approval=True)
     try:
         memory = create_memory_store()
@@ -172,15 +173,26 @@ def test_native_approval_denial_and_idempotent_replay(authority, tmp_path, monke
         staged_skill = json.loads(skill_manage("create", "approved-check", content=skill))
         assert staged_skill.get("staged"), staged_skill
         assert not (runtime.home / "skills" / "approved-check").exists()
+        assert list_entries("approved-check") == []
         payload = wa.get_pending("skills", staged_skill["pending_id"])["payload"]
         assert json.loads(apply_skill_pending(payload))["success"]
+        entries = list_entries("approved-check")
+        assert len(entries) == 1
+        assert entries[0]["evidence"]["authority_receipt"]
         assert json.loads(apply_skill_pending(payload))["replayed"]
+        assert len(list_entries("approved-check")) == 1
         changed = {**payload, "content": skill + "Altered after approval"}
         with pytest.raises(KnowledgeError, match="different payload"):
             apply_skill_pending(changed)
         resources = authority[0].snapshot(grant(authority[0], "observer2"))["resources"]
         assert len(resources) == 2
         assert all(r["revision"] == 1 for r in resources)
+        home = runtime.home
+        runtime.close()
+        runtime = bootstrap_knowledge(url=authority[1], token=grant(authority[0], "approved", generation=2), hermes_home=home)
+        assert len(list_entries("approved-check")) == 1
+        assert json.loads(apply_skill_pending(payload))["replayed"]
+        assert len(list_entries("approved-check")) == 1
     finally:
         runtime.close()
 
@@ -370,3 +382,71 @@ def test_deleted_skill_can_be_recreated_from_fresh_snapshot(authority, tmp_path,
         assert resource["revision"] == 3
     finally:
         second.close()
+
+
+def test_history_revision_cannot_relabel_or_cross_an_existing_audience(tmp_path):
+    store = KnowledgeStore(tmp_path / "history-audience.db")
+    private = grant(store, "moving", audience="private")
+    request = {"mutation_id": "private-original", "records": [{"session_id": "session", "message_id": "1",
+        "revision": 1, "payload": {"content": "original private history", "role": "user"}}]}
+    store.ingest_history(private, request)
+    public = grant(store, "moving", audience="public", generation=2)
+    for operation in (lambda: store.receipt(public, request["mutation_id"]),
+                      lambda: store.ingest_history(public, request),
+                      lambda: store.ingest_history(public, {**request, "origin": {"changed": True}})):
+        with pytest.raises(KnowledgeError, match="receipt not found") as denied:
+            operation()
+        assert denied.value.status == 404
+    update = {"mutation_id": "public-revision", "records": [{"session_id": "session", "message_id": "1",
+        "revision": 2, "payload": {"content": "replacement under new audience", "role": "user"}}]}
+    with pytest.raises(KnowledgeError, match="audience is immutable"):
+        store.ingest_history(public, update)
+    assert store.search_history(public, {})["total_sessions"] == 0
+    reader = grant(store, "private-reader", audience="private")
+    result = store.search_history(reader, {"session_id": "session"})
+    assert result["messages"][0]["content"] == "original private history"
+    assert result["messages"][0]["revision"] == 1
+
+
+def test_legacy_receipts_without_audience_fail_closed(tmp_path):
+    import sqlite3
+    path = tmp_path / "legacy.db"
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE receipts(agent TEXT,conversation TEXT,id TEXT,request_hash TEXT,result TEXT,"
+                   "PRIMARY KEY(agent,conversation,id))")
+        db.execute("INSERT INTO receipts VALUES('wallace','legacy','old','hash',?)",
+                   (json.dumps({"success": True, "acknowledged": 42}),))
+    store = KnowledgeStore(path)
+    token = grant(store, "legacy")
+    with pytest.raises(KnowledgeError, match="receipt not found"):
+        store.receipt(token, "old")
+    accepted = store.mutate(token, "memory", mutation("new", "new scoped receipt"))
+    assert store.receipt(token, "new") == accepted
+    assert KnowledgeStore(path).receipt(token, "new") == accepted
+
+
+def test_many_history_removals_and_compression_commit_every_tombstone(authority, tmp_path, monkeypatch):
+    import sqlite3
+    from hermes_state import SessionDB
+    runtime = make_runtime(authority, tmp_path, monkeypatch, "history-many")
+    db_path = runtime.home / "state.db"
+    db = SessionDB(db_path=db_path)
+    db.create_session("many", source="discord")
+    with sqlite3.connect(db_path) as local:
+        local.executemany("INSERT INTO messages(session_id,role,content,timestamp) VALUES('many','user',?,?)",
+                          [(f"message {i}", i) for i in range(503)])
+    try:
+        assert runtime.flush_history(db_path)["acknowledged"] == 503
+        with sqlite3.connect(db_path) as local:
+            local.execute("DELETE FROM messages WHERE id < (SELECT max(id) FROM messages)")
+            local.execute("UPDATE messages SET content='remaining summary',compacted=1,_compressed_summary=1")
+        assert runtime.flush_history(db_path)["acknowledged"] == 503
+        result = json.loads(runtime.search_history({"session_id": "many"}))
+        assert result["message_count"] == 1
+        assert result["messages"][0]["content"] == "remaining summary"
+        with runtime.client.connect() as local:
+            assert local.execute("SELECT count(*) FROM exports WHERE hash='deleted'").fetchone()[0] == 502
+        assert runtime.flush_history(db_path)["acknowledged"] == 0
+    finally:
+        db.close()
+        runtime.close()

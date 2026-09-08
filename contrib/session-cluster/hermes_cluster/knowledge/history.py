@@ -26,8 +26,10 @@ class HistoryStore:
                 payload = record.get("payload")
                 if not isinstance(payload, dict) or len(encode(payload)) > 1_000_000:
                     raise KnowledgeError("invalid history payload")
-                old = db.execute("SELECT revision,payload FROM history WHERE agent=? AND conversation=? AND session=? AND message=?",
+                old = db.execute("SELECT revision,payload,audience FROM history WHERE agent=? AND conversation=? AND session=? AND message=?",
                     (grant["agent"], grant["conversation"], session, message)).fetchone()
+                if old and old["audience"] != grant["audience"]:
+                    raise KnowledgeError("history audience is immutable; use a new conversation identity", 409)
                 if old and (revision < old[0] or (revision == old[0] and encode(payload) != old[1])):
                     raise KnowledgeError("history revision conflict", 409)
                 db.execute("INSERT INTO history VALUES(?,?,?,?,?,?,?,?) "

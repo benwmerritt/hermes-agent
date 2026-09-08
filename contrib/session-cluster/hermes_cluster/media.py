@@ -32,7 +32,7 @@ class MediaStore:
             if path.is_file() and path.name not in retained:
                 path.unlink()
 
-    def put(self, cid: str, data: bytes, filename: str = "attachment", mime: str = "application/octet-stream"):
+    def put(self, cid: str, data: bytes, filename: str = "attachment", mime: str = "application/octet-stream", *, authorization: str | None = None):
         if not data or len(data) > MAX_MEDIA:
             raise ValueError("media must contain 1 to 25 MiB of data")
         filename = Path(filename).name[:150]
@@ -41,30 +41,36 @@ class MediaStore:
         if any(c in mime for c in "\r\n") or len(mime) > 100:
             mime = "application/octet-stream"
         ident = hashlib.sha256(cid.encode() + b"\x00" + data).hexdigest()
-        installed = False
+        fd, temporary = tempfile.mkstemp(dir=self.root, prefix=".upload-")
         try:
-            with self.ledger.transaction() as db:
-                if db.execute("SELECT 1 FROM media WHERE id=?", (ident,)).fetchone():
-                    return ident
-                own = db.execute("SELECT COALESCE(sum(size),0) FROM media WHERE conversation_id=?", (cid,)).fetchone()[0]
-                total = db.execute("SELECT COALESCE(sum(size),0) FROM media").fetchone()[0]
-                if own + len(data) > self.per_conversation_bytes or total + len(data) > self.total_bytes:
-                    raise ValueError("retained media quota reached; operator cleanup is required")
-                fd, temporary = tempfile.mkstemp(dir=self.root, prefix=".upload-")
+            # Slow file writes must not hold the controller's SQLite lock.
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            with self.ledger.lock:
+                installed = False
                 try:
-                    with os.fdopen(fd, "wb") as stream:
-                        stream.write(data)
-                        stream.flush()
-                        os.fsync(stream.fileno())
-                    os.replace(temporary, self.root / ident)
-                    installed = True
-                    db.execute("INSERT INTO media VALUES(?,?,?,?,?)", (ident, cid, filename, mime, len(data)))
-                finally:
-                    Path(temporary).unlink(missing_ok=True)
-        except BaseException:
-            if installed:
-                (self.root / ident).unlink(missing_ok=True)
-            raise
+                    if authorization is not None and self.ledger.authenticate(authorization)["id"] != cid:
+                        raise OwnershipError("media destination differs from worker authority")
+                    with self.ledger.transaction() as db:
+                        if db.execute("SELECT 1 FROM media WHERE id=?", (ident,)).fetchone():
+                            return ident
+                        own = db.execute("SELECT COALESCE(sum(size),0) FROM media WHERE conversation_id=?", (cid,)).fetchone()[0]
+                        total = db.execute("SELECT COALESCE(sum(size),0) FROM media").fetchone()[0]
+                        if own + len(data) > self.per_conversation_bytes or total + len(data) > self.total_bytes:
+                            raise ValueError("retained media quota reached; operator cleanup is required")
+                        os.replace(temporary, self.root / ident)
+                        installed = True
+                        db.execute("INSERT INTO media VALUES(?,?,?,?,?)", (ident, cid, filename, mime, len(data)))
+                except BaseException:
+                    # Retain the lock through rollback cleanup so a concurrent
+                    # identical upload cannot commit the file before removal.
+                    if installed:
+                        (self.root / ident).unlink(missing_ok=True)
+                    raise
+        finally:
+            Path(temporary).unlink(missing_ok=True)
         return ident
 
     def get(self, ident: str, cid: str):
@@ -100,8 +106,11 @@ class MediaStore:
                 if current["generation"] != owner["generation"]:
                     raise HTTPException(403, "worker generation changed during upload")
                 try:
-                    ident = self.put(owner["id"], bytes(data), request.headers.get("x-media-filename", "attachment"),
-                                     request.headers.get("content-type", "application/octet-stream"))
+                    ident = await asyncio.to_thread(self.put, owner["id"], bytes(data), request.headers.get("x-media-filename", "attachment"),
+                                                    request.headers.get("content-type", "application/octet-stream"),
+                                                    authorization=request.headers.get("authorization", ""))
+                except OwnershipError as exc:
+                    raise HTTPException(403, "worker authorization changed during media storage") from exc
                 except ValueError as exc:
                     raise HTTPException(413, str(exc)) from exc
                 return {"id": ident, "size": len(data)}

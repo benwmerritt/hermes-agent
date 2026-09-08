@@ -105,7 +105,7 @@ async def test_visibility_changes_stop_delivery_and_private_membership_changes_l
     parent.overwrites = {everyone: discord.PermissionOverwrite(view_channel=False)}
     private = await connector.audience(source)
     assert private != public and private.startswith("private:1:11:")
-    with pytest.raises(OwnershipError, match="visibility changed"):
+    with pytest.raises(OwnershipError, match="authorized destination"):
         await connector.notice(owner, "private content")
     thread.send.assert_not_awaited()
     thread.type = discord.ChannelType.private_thread
@@ -125,6 +125,7 @@ async def test_relay_final_edit_keeps_the_complete_discord_reply(tmp_path):
     connector, source, parent, thread, actor, everyone = fixture(tmp_path)
     owner, _ = connector.ledger.admit(agent_id="timmy", native_key=build_session_key(source), source=source.to_dict(),
         audience=await connector.audience(source), event_id="initial", payload={"text": "test"}, actor="3")
+    connector.ledger.transition(owner["id"], 1, "ready")
     connector.ledger.remember_message("100", owner["id"], 1, "bot")
     class Bridge:
         async def send_outbound(self, action, *, platform=None):
@@ -140,3 +141,46 @@ async def test_relay_final_edit_keeps_the_complete_discord_reply(tmp_path):
     initial = thread.get_partial_message.return_value.edit.call_args.kwargs["content"]
     continuation = "".join(call.kwargs["content"] for call in thread.send.await_args_list)
     assert re.findall(r"token\d{4}", initial + continuation) == words
+
+
+@pytest.mark.asyncio
+async def test_outbound_fences_changed_audience_and_rechecks_owner_after_visibility_io(tmp_path):
+    connector, source, parent, thread, actor, everyone = fixture(tmp_path)
+    audience = await connector.audience(source)
+    owner, _ = connector.ledger.admit(agent_id="timmy", native_key=build_session_key(source), source=source.to_dict(),
+        audience=audience, event_id="initial", payload={"text": "test"}, actor="3")
+    connector.ledger.transition(owner["id"], 1, "ready")
+    connector.fence_owner = AsyncMock()
+    parent.overwrites = {everyone: discord.PermissionOverwrite(view_channel=False)}
+    with pytest.raises(OwnershipError, match="visibility changed"):
+        await connector.dispatch(owner, {"op": "send", "chat_id": "11", "content": "private result"})
+    connector.fence_owner.assert_awaited_once()
+    thread.send.assert_not_awaited()
+    parent.overwrites = {}
+    async def visibility_changed_lifecycle(_source):
+        connector.ledger.transition(owner["id"], 1, "recovery_required")
+        return audience
+    connector.audience = visibility_changed_lifecycle
+    with pytest.raises(OwnershipError, match="eligible worker"):
+        await connector.dispatch(owner, {"op": "send", "chat_id": "11", "content": "late result"})
+    thread.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_native_document_projection_preserves_contents_without_controller_paths(tmp_path):
+    from gateway.platforms.event import MessageEvent, MessageType
+    from hermes_cluster.wire import to_wire
+    connector, source, parent, thread, actor, everyone = fixture(tmp_path)
+    attachment = SimpleNamespace(filename="fixture.txt", content_type="text/plain", size=16,
+        url="https://cdn.discordapp.com/fixture.txt", read=AsyncMock(return_value=b"document fixture"))
+    paths, types, injection = await connector.adapter._collect_attachment_media([attachment])
+    assert len(paths) == 1
+    event = MessageEvent(text="Read this.\n" + injection, source=source, message_id="90",
+                         message_type=MessageType.DOCUMENT, media_urls=paths, media_types=types)
+    wire = to_wire(event, "conversation", connector.media, "http://controller.test")
+    assert "document fixture" in wire["text"] and "fixture.txt" in wire["text"]
+    assert paths[0] not in str(wire)
+    assert wire["media_urls"][0].startswith("http://controller.test/relay/media/")
+    media_id = wire["media_urls"][0].rsplit("/", 1)[-1]
+    stored, metadata = connector.media.get(media_id, "conversation")
+    assert stored.read_bytes() == b"document fixture"

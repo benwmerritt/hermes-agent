@@ -49,7 +49,7 @@ class KnowledgeStore(HistoryStore):
                     provenance TEXT NOT NULL, PRIMARY KEY(agent,audience,kind,key));
                 CREATE TABLE IF NOT EXISTS receipts (
                     agent TEXT NOT NULL, conversation TEXT NOT NULL, id TEXT NOT NULL,
-                    request_hash TEXT NOT NULL, result TEXT NOT NULL,
+                    request_hash TEXT NOT NULL, result TEXT NOT NULL, audience TEXT,
                     PRIMARY KEY(agent,conversation,id));
                 CREATE TABLE IF NOT EXISTS snapshots (
                     id TEXT PRIMARY KEY, agent TEXT NOT NULL, conversation TEXT NOT NULL,
@@ -60,6 +60,10 @@ class KnowledgeStore(HistoryStore):
                     payload TEXT NOT NULL, provenance TEXT NOT NULL,
                     PRIMARY KEY(agent,conversation,session,message));
             """)
+            if "audience" not in {row["name"] for row in db.execute("PRAGMA table_info(receipts)")}:
+                # Pre-release receipts have no trustworthy audience. Preserve them,
+                # but deny replay/read rather than infer scope from rotated grants.
+                db.execute("ALTER TABLE receipts ADD COLUMN audience TEXT")
 
     @contextmanager
     def transaction(self):
@@ -171,6 +175,8 @@ class KnowledgeStore(HistoryStore):
         row = db.execute("SELECT * FROM receipts WHERE agent=? AND conversation=? AND id=?",
                          (grant["agent"], grant["conversation"], mutation_id)).fetchone()
         if row:
+            if row["audience"] != grant["audience"]:
+                raise KnowledgeError("receipt not found", 404)
             if row["request_hash"] != digest(request):
                 raise KnowledgeError("mutation_id reused with different content", 409)
             result = json.loads(row["result"])
@@ -179,16 +185,17 @@ class KnowledgeStore(HistoryStore):
             return result
 
     def _save_receipt(self, db, grant, request, result):
-        db.execute("INSERT INTO receipts VALUES(?,?,?,?,?)", (
-            grant["agent"], grant["conversation"], request["mutation_id"], digest(request), encode(result)))
+        db.execute("INSERT INTO receipts(agent,conversation,id,request_hash,result,audience) VALUES(?,?,?,?,?,?)", (
+            grant["agent"], grant["conversation"], request["mutation_id"], digest(request), encode(result),
+            grant["audience"]))
         return result
 
     def receipt(self, token, mutation_id):
         with self.transaction() as db:
             grant = self._authorize(db, token)
-            row = db.execute("SELECT result FROM receipts WHERE agent=? AND conversation=? AND id=?",
+            row = db.execute("SELECT result,audience FROM receipts WHERE agent=? AND conversation=? AND id=?",
                              (grant["agent"], grant["conversation"], mutation_id)).fetchone()
-            if row is None:
+            if row is None or row["audience"] != grant["audience"]:
                 raise KnowledgeError("receipt not found", 404)
             result = json.loads(row[0])
             if any(r["audience"] != grant["audience"] for r in result.get("resources", [])):

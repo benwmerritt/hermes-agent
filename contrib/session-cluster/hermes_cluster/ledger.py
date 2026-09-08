@@ -198,7 +198,7 @@ class Ledger:
         except (ValueError, UnicodeError) as exc:
             raise OwnershipError("invalid worker credential") from exc
         row = self.get(cid)
-        if (not row or row["generation"] != gen or row["status"] in ("queued", "stopped")
+        if (not row or row["generation"] != gen or row["status"] in ("queued", "stopped", "recovery_required")
                 or expiry < time.time() or expiry > time.time() + 600):
             raise OwnershipError("expired or revoked worker credential")
         expected = hmac.new(row["relay_secret"].encode(), f"{worker_id}:{expiry}".encode(), hashlib.sha256).hexdigest()

@@ -85,6 +85,21 @@ class ConversationGateway(GatewayRunner):
         # committed. Preserve native pending state for an explicit human follow-up.
         return 0
 
+    async def _claim_pending_obligations(self) -> list:
+        # A prior Discord send may have committed before its acknowledgement.
+        # Keep the native obligation and its full content untouched for operator
+        # reconciliation; a new Relay request ID cannot deduplicate that send.
+        return []
+
+    async def _redeliver_failed_obligations_for_platform(self, platform, *, profile=None) -> int:
+        return 0
+
+    async def _arm_flood_timers_for_waiting_rows(self) -> None:
+        return None
+
+    def _schedule_flood_redelivery(self, platform, *, profile=None) -> None:
+        return None
+
     async def _start_post_connect_services(self, connected_count: int) -> None:
         # Retain process liveness and plugin startup, without starting hosted-room
         # workers or user-created heartbeat schedules in every conversation Pod.
@@ -93,6 +108,14 @@ class ConversationGateway(GatewayRunner):
 
     def _is_user_authorized(self, source, *, allow_adapter_delegation=True) -> bool:
         return self.policy.accepts(source)
+
+    async def _interrupt_and_clear_session(self, session_key, source, **kwargs) -> None:
+        await super()._interrupt_and_clear_session(session_key, source, **kwargs)
+        # The native hard stop can retire the agent/executor before an approval
+        # wait observes its thread-local interrupt bit. Wake that wait explicitly
+        # after invalidating the run, so it cannot execute and keep the Pod alive.
+        from tools.approval import resolve_gateway_approval
+        resolve_gateway_approval(session_key, "deny", resolve_all=True, reason="Conversation interrupted")
 
     async def _handle_message(self, event):
         if not self.policy.accepts(event.source, require_actor=not event.internal):

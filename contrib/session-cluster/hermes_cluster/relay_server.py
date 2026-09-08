@@ -10,6 +10,9 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from .ledger import OwnershipError
 
+# Return a durable uncertain result before the native Relay client's 30s limit.
+OUTBOUND_TIMEOUT_S = 25.0
+
 
 @dataclass
 class Connection:
@@ -71,7 +74,10 @@ def create_relay_router(controller):
                     if kind == "inbound_ack":
                         controller.ledger.acknowledge(str(frame.get("bufferId", "")), cid, owner["generation"])
                     elif kind == "going_idle":
-                        controller.ledger.transition(cid, owner["generation"], "draining", detail="worker requested graceful drain")
+                        # Shutdown acknowledgement cannot restore a revoked
+                        # owner's lifecycle or turn an interrupted exit clean.
+                        if current["status"] in ("ready", "draining"):
+                            controller.ledger.transition(cid, owner["generation"], "draining", detail="worker requested graceful drain")
                         await connection.send({"type": "going_idle_ack"})
                     elif kind == "outbound":
                         if frame.get("platform", "discord") != "discord" or str(frame.get("botId", controller.config["bot_id"])) != str(controller.config["bot_id"]):
@@ -83,9 +89,11 @@ def create_relay_router(controller):
                         result = controller.ledger.begin_outbound(worker_id, request_id, action)
                         if result is None:
                             try:
-                                result = await controller.connector.dispatch(current, action)
+                                result = await asyncio.wait_for(controller.connector.dispatch(current, action), OUTBOUND_TIMEOUT_S)
                             except OwnershipError:
                                 result = {"success": False, "error": "destination authorization refused", "code": "forbidden"}
+                            except asyncio.TimeoutError:
+                                result = {"success": False, "error": "platform timed out; inspect before retry", "ambiguous": True}
                             except Exception:
                                 # The platform may have accepted the action before a timeout.
                                 # Never translate uncertainty into a safe-to-retry failure.

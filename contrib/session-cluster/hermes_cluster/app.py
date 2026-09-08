@@ -30,7 +30,7 @@ def create_app(controller):
     async def operator(request: Request):
         expected = os.environ.get("HERMES_CLUSTER_OPERATOR_TOKEN", "")
         provided = request.headers.get("authorization", "")
-        if len(expected) < 24 or not hmac.compare_digest(provided, f"Bearer {expected}"):
+        if len(expected) < 24 or not hmac.compare_digest(provided.encode(), f"Bearer {expected}".encode()):
             raise HTTPException(403, "operator authorization required")
 
     @app.get("/healthz")

@@ -138,6 +138,8 @@ class ReviewConnector:
         return True
     async def disconnect(self):
         pass
+    async def notice(self, owner, text):
+        return {'success': True}
 
 
 def review_controller(tmp_path):
@@ -146,7 +148,7 @@ def review_controller(tmp_path):
     class Backend:
         async def status(self, identity):
             return WorkerStatus('Running')
-    knowledge = SimpleNamespace(register_worker=lambda **kw: None)
+    knowledge = SimpleNamespace(register_worker=lambda **kw: None, revoke_worker=lambda *a, **kw: None)
     controller = Controller({'data_dir': str(tmp_path), 'relay_url': 'http://test',
                              'bot_id': '1', 'native_config': {}}, Backend(), knowledge,
                              connector_factory=ReviewConnector)
@@ -240,3 +242,117 @@ async def test_approval_is_not_dispatchable_until_audience_check_finishes(tmp_pa
         release.set()
         await response
     assert sum(bool(event['payload'].get('prompt_response')) for event in controller.ledger.queued(row['id'])) == 1
+
+
+def real_knowledge(controller, row, tmp_path):
+    from hermes_cluster.knowledge import KnowledgeStore
+    controller.knowledge = KnowledgeStore(tmp_path / 'review-knowledge.sqlite')
+    controller.register_knowledge(row)
+    return controller.knowledge
+
+
+@pytest.mark.asyncio
+async def test_fence_during_reconnect_audience_await_cannot_restore_ready(tmp_path):
+    from hermes_cluster.knowledge import KnowledgeError
+    controller, row = review_controller(tmp_path)
+    knowledge = real_knowledge(controller, row, tmp_path)
+    arrived, release = asyncio.Event(), asyncio.Event()
+    async def audience_hook():
+        arrived.set()
+        await release.wait()
+    controller.connector.audience_hook = audience_hook
+    handshake = asyncio.create_task(controller.connect_owner(SimpleNamespace(owner=row)))
+    await asyncio.wait_for(arrived.wait(), 2)
+    await controller.fence_owner(row, 'concurrent operator fence')
+    release.set()
+    await asyncio.gather(handshake, return_exceptions=True)
+    assert controller.ledger.get(row['id'])['status'] == 'recovery_required'
+    assert row['id'] not in controller.connections
+    with pytest.raises(KnowledgeError, match='revoked'):
+        knowledge.snapshot(row['knowledge_token'])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('operation', ['reconnect', 'approval'])
+async def test_explicit_audience_denial_revokes_capability_not_just_delivery(tmp_path, operation):
+    from hermes_cluster.knowledge import KnowledgeError
+    controller, row = review_controller(tmp_path)
+    knowledge = real_knowledge(controller, row, tmp_path)
+    async def audience_denied():
+        raise OwnershipError('conversation owner no longer has Discord channel visibility')
+    controller.connector.audience_hook = audience_denied
+    if operation == 'reconnect':
+        action = controller.connect_owner(SimpleNamespace(owner=row))
+    else:
+        controller.ledger.create_prompt('denied-prompt', row, 'one', [{'id': 'once'}])
+        controller.ledger.attach_prompt('denied-prompt', 'prompt-message')
+        interaction = SimpleNamespace(user=SimpleNamespace(id='allowed'), channel_id='one',
+                                      message=SimpleNamespace(id='prompt-message'), id='click')
+        action = controller.prompt_response('denied-prompt', 'once', interaction)
+    with pytest.raises(OwnershipError):
+        await action
+    assert controller.ledger.get(row['id'])['status'] == 'recovery_required'
+    with pytest.raises(KnowledgeError, match='revoked'):
+        knowledge.snapshot(row['knowledge_token'])
+
+
+@pytest.mark.asyncio
+async def test_interrupted_provisioning_retry_failure_revokes_issued_knowledge_grant(tmp_path, monkeypatch):
+    from hermes_cluster.knowledge import KnowledgeError
+    controller, existing = review_controller(tmp_path)
+    # This represents a controller restart after reserve_next but before recording a Pod identity.
+    with controller.ledger.transaction() as db:
+        db.execute("UPDATE conversations SET status='provisioning',identity=NULL WHERE id=?", (existing['id'],))
+    row = controller.ledger.get(existing['id'])
+    knowledge = real_knowledge(controller, row, tmp_path)
+    monkeypatch.setenv('OPENAI_API_KEY', 'test-provider-credential')
+    async def fail_credentials(*args, **kwargs):
+        controller.stopping = True
+        controller.wake.set()
+        raise RuntimeError('injected credential provisioning failure')
+    controller.backend.create_credentials = fail_credentials
+    await controller.run()
+    assert controller.ledger.get(row['id'])['status'] == 'recovery_required'
+    with pytest.raises(KnowledgeError, match='revoked'):
+        knowledge.snapshot(row['knowledge_token'])
+
+
+@pytest.mark.asyncio
+async def test_late_ingress_ack_cannot_reopen_fenced_or_recovered_owner(tmp_path):
+    from hermes_cluster.knowledge import KnowledgeError
+    controller, row = review_controller(tmp_path)
+    knowledge = real_knowledge(controller, row, tmp_path)
+    controller.ledger.dispatch('one', row['id'], row['generation'])
+    await controller.fence_owner(row, 'explicit reconciliation required')
+    controller.ledger.acknowledge('one', row['id'], row['generation'])
+    assert controller.ledger.get(row['id'])['status'] == 'recovery_required'
+    with pytest.raises(KnowledgeError):
+        knowledge.snapshot(row['knowledge_token'])
+    recovered = controller.ledger.prepare_recovery(row['id'], row['generation'], 'checked uncertain effects and retained history')
+    controller.ledger.acknowledge('one', row['id'], row['generation'])
+    current = controller.ledger.get(row['id'])
+    assert current['generation'] == recovered['generation']
+    assert current['status'] == 'queued'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('phase,terminated', [('Unknown', False), ('Succeeded', True)])
+async def test_status_inspection_cannot_overwrite_a_concurrent_fence(tmp_path, phase, terminated):
+    from hermes_cluster.knowledge import KnowledgeError
+    controller, row = review_controller(tmp_path)
+    knowledge = real_knowledge(controller, row, tmp_path)
+    controller.ledger.transition(row['id'], row['generation'], 'draining')
+    arrived, release = asyncio.Event(), asyncio.Event()
+    async def delayed_status(identity):
+        arrived.set()
+        await release.wait()
+        return SimpleNamespace(phase=phase, terminated=terminated)
+    controller.backend.status = delayed_status
+    inspection = asyncio.create_task(controller.inspect_workers())
+    await asyncio.wait_for(arrived.wait(), 2)
+    await controller.fence_owner(row, 'audience revoked during status inspection')
+    release.set()
+    await inspection
+    assert controller.ledger.get(row['id'])['status'] == 'recovery_required'
+    with pytest.raises(KnowledgeError, match='revoked'):
+        knowledge.snapshot(row['knowledge_token'])

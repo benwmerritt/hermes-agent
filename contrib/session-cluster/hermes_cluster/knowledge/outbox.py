@@ -46,12 +46,15 @@ def _export_rows(source_db, local):
         revision = old[1] + 1 if old else 1
         add({"session_id": session, "message_id": message, "revision": revision, "payload": payload})
         local.execute("INSERT OR REPLACE INTO exports VALUES(?,?,?)", (key, fingerprint, revision))
-    removed = local.execute("SELECT key,revision FROM exports WHERE hash!='deleted' "
-                            "AND key NOT IN (SELECT key FROM seen_exports)")
-    for key, revision in removed:
-        session, message = json.loads(key)
-        add({"session_id": session, "message_id": message, "revision": revision + 1, "payload": {"deleted": True}})
-        local.execute("UPDATE exports SET hash='deleted',revision=? WHERE key=?", (revision + 1, key))
+    while True:
+        removed = local.execute("SELECT key,revision FROM exports WHERE hash!='deleted' "
+                                "AND key NOT IN (SELECT key FROM seen_exports) LIMIT 500").fetchall()
+        if not removed:
+            break
+        for key, revision in removed:
+            session, message = json.loads(key)
+            add({"session_id": session, "message_id": message, "revision": revision + 1, "payload": {"deleted": True}})
+            local.execute("UPDATE exports SET hash='deleted',revision=? WHERE key=?", (revision + 1, key))
     _enqueue(local, records)
 
 

@@ -86,7 +86,7 @@ class PromptView(discord.ui.View):
 
 
 class DiscordConnector:
-    def __init__(self, config: dict, route, prompt_response, *, ledger, media, relay_url: str):
+    def __init__(self, config: dict, route, prompt_response, *, ledger, media, relay_url: str, fence_owner=None):
         self.config = dict(config)
         for name in ("guild_id", "bot_id"):
             self.config[name] = str(config[name])
@@ -98,6 +98,7 @@ class DiscordConnector:
                 raise ValueError(f"{name} must contain explicit Discord snowflakes")
         self.route, self.prompt_response = route, prompt_response
         self.ledger, self.media = ledger, media
+        self.fence_owner = fence_owner
         parsed = urlsplit(relay_url)
         scheme = {"ws": "http", "wss": "https"}.get(parsed.scheme, parsed.scheme)
         self.media_base = f"{scheme}://{parsed.netloc}"
@@ -172,8 +173,20 @@ class DiscordConnector:
         metadata = dict(action.get("metadata") or {})
         if metadata.get("thread_id") and str(metadata["thread_id"]) != str(source.thread_id or source.chat_id):
             raise OwnershipError("worker cannot redirect an outbound action to another thread")
-        if await self.audience(source) != owner["audience"]:
+        try:
+            audience = await self.audience(source)
+        except OwnershipError:
+            if self.fence_owner is not None:
+                await self.fence_owner(owner, "Discord destination is no longer authorized")
+            raise
+        if audience != owner["audience"]:
+            if self.fence_owner is not None:
+                await self.fence_owner(owner, "Discord visibility changed during outbound authorization")
             raise OwnershipError("Discord visibility changed; conversation requires reconciliation")
+        current = self.ledger.get(owner["id"])
+        if (current is None or current["generation"] != owner["generation"]
+                or current["source"] != owner["source"] or current["status"] not in {"ready", "draining"}):
+            raise OwnershipError("outbound action no longer belongs to an eligible worker")
         reply_to = action.get("reply_to")
         if reply_to and not self.ledger.owns_message(str(reply_to), owner["id"]):
             raise OwnershipError("reply target belongs to another conversation")
@@ -194,7 +207,8 @@ class DiscordConnector:
         return {"success": result.success, "message_id": result.message_id, "error": result.error}
 
     async def notice(self, owner, text):
-        if self.ledger.get(owner["id"]) is None:
+        current = self.ledger.get(owner["id"])
+        if current is None:
             # Admission errors have no worker yet. Authorize the original native
             # source without inventing a writable owner in the ledger.
             source = SessionSource.from_dict(owner["source"])
@@ -203,7 +217,18 @@ class DiscordConnector:
             result = await self.adapter.send(source.chat_id, text,
                 metadata={"thread_id": source.thread_id} if source.thread_id else None)
             return self._remember(owner, result)
-        return await self.dispatch(owner, {"op": "send", "chat_id": owner["source"]["chat_id"], "content": text})
+        # Controller notices must remain available while queued/stopped, without
+        # granting the worker permission to emit model content in those states.
+        if (current["generation"] != owner["generation"] or current["source"] != owner["source"]
+                or await self.audience(owner["source"]) != owner["audience"]):
+            raise OwnershipError("controller notice has no authorized destination")
+        current = self.ledger.get(owner["id"])
+        if current["generation"] != owner["generation"]:
+            raise OwnershipError("controller notice belongs to a stale generation")
+        source = SessionSource.from_dict(owner["source"])
+        result = await self.adapter.send(source.chat_id, text,
+            metadata={"thread_id": source.thread_id} if source.thread_id else None)
+        return self._remember(owner, result)
 
     async def dispatch(self, owner: dict, action: dict) -> dict:
         source, metadata = await self._authorize_action(owner, action)
