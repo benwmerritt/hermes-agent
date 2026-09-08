@@ -15,6 +15,7 @@ on:
       - contrib/session-cluster/**
       - tests/session_cluster/**
       - tests/gateway/relay/**
+      - tests/gateway/test_attachment_processing_outcome.py
 
 permissions:
   contents: read
@@ -54,7 +55,7 @@ jobs:
           set -euo pipefail
           uv sync --locked --python 3.12 --extra dev --extra messaging
           uv pip install --python .venv/bin/python --no-deps -e contrib/session-cluster
-          scripts/run_tests.sh tests/session_cluster tests/gateway/relay -q
+          scripts/run_tests.sh tests/session_cluster tests/gateway/relay tests/gateway/test_attachment_processing_outcome.py -q
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Build AMD64 image and OCI recovery artifact
         id: build
