@@ -56,6 +56,15 @@ with claim_home(config):
     assert runner._schedule_resume_pending_sessions() == 0
     assert not runner.request_restart()
     assert Path(config["hermes_home"], "state.db").exists()
+    from unittest.mock import AsyncMock, patch
+    async def check_first_contact_notes():
+        notes = []
+        with patch.object(runner, "_deliver_platform_notice", new_callable=AsyncMock) as notice:
+            await runner._hmwa_first_contact_notes(policy.source, [], notes)
+            notice.assert_not_awaited()
+        assert notes, "native first-contact onboarding should remain available"
+        assert policy.source.platform == Platform.DISCORD
+    asyncio.run(check_first_contact_notes())
     descriptor = CapabilityDescriptor(contract_version=1, platform="discord", label="Discord",
         max_message_length=2000, supports_draft_streaming=False, supports_edit=True,
         supports_threads=True, markdown_dialect="discord", len_unit="chars")

@@ -228,6 +228,7 @@ async def test_native_worker_approval_reply_history_and_park(tmp_path, monkeypat
         assert any("Fixture approved and executed" in str(row) for row in rows)
         assert any("fixture-complete" in str(row) for row in rows)
         assert any("Autonomous fixture completion received" in str(row) for row in rows)
+        assert not any("No home channel is set" in m.get("content", "") for m in sent)
     finally:
         await backend.aclose()
         server.should_exit = True

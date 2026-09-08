@@ -4,6 +4,8 @@ Import only after preparing HERMES_HOME and its immutable knowledge snapshot.
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 from gateway.config import Platform, PlatformConfig
 from gateway.relay.adapter import RelayAdapter
 from gateway.run import GatewayRunner
@@ -108,6 +110,13 @@ class ConversationGateway(GatewayRunner):
 
     def _is_user_authorized(self, source, *, allow_adapter_delegation=True) -> bool:
         return self.policy.accepts(source)
+
+    async def _hmwa_first_contact_notes(self, source, history, turn_sidecar_notes):
+        # Reuse native onboarding, whose LOCAL branch omits only home-channel
+        # setup. This helper-only copy never changes the event or delivery route;
+        # a conversation worker has no shared cron/cross-platform home to set up.
+        await super()._hmwa_first_contact_notes(
+            replace(source, platform=Platform.LOCAL), history, turn_sidecar_notes)
 
     async def _interrupt_and_clear_session(self, session_key, source, **kwargs) -> None:
         await super()._interrupt_and_clear_session(session_key, source, **kwargs)
