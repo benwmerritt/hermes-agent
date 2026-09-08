@@ -136,6 +136,10 @@ registered Discord application commands:
   Relay delivery tasks get the native adapter-cleanup timeout to finish their
   receipts before disconnect. If that wait expires, the worker exits nonzero and
   retains uncertain obligations for inspection; it does not resend them.
+  The controller records park intent before sending the shutdown request. Only
+  that conversation generation's durable intent plus verified successful
+  termination can produce `stopped`. A worker's `going_idle` frame alone, including
+  one sent during a signal-driven shutdown, requires recovery even after exit zero.
 - `/cluster resume <reconciliation note>` authorizes another worker generation
   against the same PVC after termination is proved. The note must describe what
   was checked. It is retained in the controller audit ledger.

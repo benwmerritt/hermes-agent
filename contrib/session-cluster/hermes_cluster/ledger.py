@@ -121,6 +121,13 @@ class Ledger:
             db.execute("INSERT INTO audit(at,conversation_id,event,detail) VALUES(?,?,?,?)",
                        (time.time(), conversation_id, event, canonical(detail)))
 
+    def has_park_intent(self, conversation_id: str, generation: int) -> bool:
+        with self.lock:
+            return self.db.execute(
+                "SELECT 1 FROM audit WHERE conversation_id=? AND event='park_requested' "
+                "AND json_extract(detail,'$.generation')=? LIMIT 1",
+                (conversation_id, generation)).fetchone() is not None
+
     def admit(self, *, agent_id: str, native_key: str, source: dict, audience: str,
               event_id: str, payload: dict, actor: str) -> tuple[dict, bool]:
         encoded = canonical(payload)

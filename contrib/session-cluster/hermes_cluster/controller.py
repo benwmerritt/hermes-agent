@@ -176,7 +176,8 @@ class Controller:
                 continue
             owner = current
             if status.terminated:
-                graceful = owner["status"] == "draining" and status.phase == "Succeeded"
+                graceful = (owner["status"] == "draining" and status.phase == "Succeeded"
+                            and self.ledger.has_park_intent(owner["id"], owner["generation"]))
                 state = "stopped" if graceful else "recovery_required"
                 if owner["status"] != state:
                     self.ledger.transition(owner["id"], owner["generation"], state,
@@ -284,9 +285,11 @@ class Controller:
         if not connection or owner["status"] != "ready":
             raise OwnershipError("a connected worker is required for graceful park")
         self.ledger.transition(cid, owner["generation"], "draining", detail="owner requested graceful park")
+        # A worker can exit during send. Commit intent before that first await;
+        # native going_idle also occurs on unexpected signals and is not consent.
+        self.ledger.record(cid, "park_requested", {"generation": owner["generation"]})
         await connection.send({"type": "inbound", "event": {"text": "/cluster-stop-worker", "message_type": "command",
                               "source": owner["source"], "message_id": f'park:{cid}:{owner["generation"]}'}})
-        self.ledger.record(cid, "park_requested", {"generation": owner["generation"]})
 
     async def recover(self, cid, note):
         async with self.operations:
