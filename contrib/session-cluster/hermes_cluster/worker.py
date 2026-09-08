@@ -85,7 +85,6 @@ async def _run(config: dict, knowledge) -> int:
         status(config, "ready", snapshot_id=knowledge.snapshot_id)
         await runner.wait_for_shutdown()
         status(config, "stopping", snapshot_id=knowledge.snapshot_id)
-        return int(runner.exit_code or 0)
     finally:
         stopping.set()
         await runner.stop()
@@ -96,6 +95,8 @@ async def _run(config: dict, knowledge) -> int:
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.remove_signal_handler(sig)
         await asyncio.to_thread(knowledge.flush_history, Path(config["hermes_home"]) / "state.db")
+    # Teardown can discover an unacknowledged delivery after shutdown was requested.
+    return int(runner.exit_code or 0)
 
 
 def run(config: dict) -> int:

@@ -245,6 +245,12 @@ class KubernetesBackend:
                 "restartPolicy": "Never", "serviceAccountName": self.worker_service_account,
                 "automountServiceAccountToken": False, "enableServiceLinks": False,
                 "terminationGracePeriodSeconds": 120,
+                # Default 300s node-loss eviction would delete our termination evidence.
+                # Only the controller may authorize recovery of this retained owner.
+                "tolerations": [
+                    {"key": f"node.kubernetes.io/{condition}", "operator": "Exists",
+                     "effect": "NoExecute"}
+                    for condition in ("not-ready", "unreachable")],
                 "securityContext": {"runAsNonRoot": True, "runAsUser": 10000,
                     "runAsGroup": 10000, "fsGroup": 10000, "fsGroupChangePolicy": "OnRootMismatch",
                     "seccompProfile": {"type": "RuntimeDefault"}},

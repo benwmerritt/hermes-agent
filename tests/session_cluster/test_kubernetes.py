@@ -85,6 +85,45 @@ async def test_reconcile_preserves_exact_generation_and_retained_data(cluster):
 
 
 @pytest.mark.asyncio
+async def test_worker_survives_node_loss_taints_without_widening_scheduling(cluster):
+    backend, api = cluster
+    identity = await create(backend)
+    tolerations = api.objects['pods', identity.pod_name]['spec'].get('tolerations', [])
+    assert {t['key'] for t in tolerations} == {
+        'node.kubernetes.io/not-ready', 'node.kubernetes.io/unreachable'}
+    assert all(t['operator'] == 'Exists' and t['effect'] == 'NoExecute'
+               and 'tolerationSeconds' not in t for t in tolerations)
+
+
+@pytest.mark.asyncio
+async def test_legacy_pod_adoption_preserves_spec_until_confirmed_recovery(cluster):
+    backend, api = cluster
+    first = await create(backend)
+    pod = api.objects['pods', first.pod_name]
+    pod['spec']['tolerations'] = [
+        {'key': f'node.kubernetes.io/{condition}', 'operator': 'Exists',
+         'effect': 'NoExecute', 'tolerationSeconds': 300}
+        for condition in ('not-ready', 'unreachable')]
+    pod['status'] = {'phase': 'Unknown', 'reason': 'NodeLost'}
+    before = copy.deepcopy(pod)
+    assert await create(backend) == first
+    assert api.objects['pods', first.pod_name] == before
+    assert not (await backend.status(first)).terminated
+    with pytest.raises(OwnershipConflict, match='confirmed terminated'):
+        await create(backend, 2)
+    pod['status'] = {'phase': 'Failed', 'containerStatuses': [
+        {'name': 'worker', 'state': {'terminated': {'exitCode': 137}}}]}
+    second = await create(backend, 2)
+    assert second.pvc_name == first.pvc_name and second.pvc_uid == first.pvc_uid
+    assert second.pod_uid != first.pod_uid
+    new_tolerations = api.objects['pods', second.pod_name]['spec'].get('tolerations', [])
+    assert {t['key'] for t in new_tolerations} == {
+        t['key'] for t in before['spec']['tolerations']}
+    assert all('tolerationSeconds' not in t for t in new_tolerations)
+    assert pod['spec'] == before['spec']
+
+
+@pytest.mark.asyncio
 async def test_prior_owner_in_unknown_failed_or_deleting_state_blocks_replacement(cluster):
     backend, api = cluster
     first = await create(backend)

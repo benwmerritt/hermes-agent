@@ -4,12 +4,16 @@ Import only after preparing HERMES_HOME and its immutable knowledge snapshot.
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
+import logging
 
 from gateway.config import Platform, PlatformConfig
 from gateway.relay.adapter import RelayAdapter
-from gateway.run import GatewayRunner
+from gateway.run import GatewayRunner, _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT
 from gateway.session import SessionSource, build_session_key
+
+logger = logging.getLogger(__name__)
 
 
 class ConversationPolicy:
@@ -86,6 +90,26 @@ class ConversationGateway(GatewayRunner):
         # A new process cannot establish whether an interrupted external effect
         # committed. Preserve native pending state for an explicit human follow-up.
         return 0
+
+    async def _bounded_adapter_teardown(self, adapter, platform, *, profile=None) -> None:
+        # Native agent drain ends before adapter-owned final sends and their ledger
+        # acknowledgements. Let those settle before native teardown cancels them.
+        if platform == Platform.RELAY:
+            timeout = self._adapter_disconnect_timeout_secs()
+            if timeout <= 0:
+                timeout = _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT
+            deadline = asyncio.get_running_loop().time() + timeout
+            current = asyncio.current_task()
+            while pending := {task for task in adapter._session_tasks.values()
+                              if task is not current and not task.done()}:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    self._exit_code = 1
+                    self._exit_reason = "Relay delivery cleanup timed out; reconcile retained obligations"
+                    logger.error(self._exit_reason)
+                    break
+                await asyncio.wait(pending, timeout=remaining)
+        await super()._bounded_adapter_teardown(adapter, platform, profile=profile)
 
     async def _claim_pending_obligations(self) -> list:
         # A prior Discord send may have committed before its acknowledgement.

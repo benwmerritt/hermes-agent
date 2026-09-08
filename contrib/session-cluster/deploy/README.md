@@ -94,6 +94,31 @@ require the existing PVC, check its UID, and check its bound PV name when known.
 A missing, Lost, or substituted claim blocks recovery rather than creating an
 empty home. PVCs, ConfigMaps, and Secrets survive worker stop; cleanup is explicit.
 
+New worker Pods explicitly tolerate the `node.kubernetes.io/not-ready` and
+`node.kubernetes.io/unreachable` `NoExecute` taints indefinitely. Their tolerations
+omit `tolerationSeconds`. Kubernetes otherwise adds the API server's configured
+default limit, normally 300 seconds, and may
+evict the recorded Pod before its node returns, losing the termination evidence
+required for recovery. These two tolerations preserve the controller's recovery
+decision through a node outage. They do not tolerate `NoSchedule` taints, prevent
+other eviction or deletion, restart containers, or authorize a replacement.
+See [Kubernetes taint-based eviction](https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/#taint-based-evictions).
+
+Adopting an existing worker preserves its Pod specification, including any older
+300-second tolerations. A controller upgrade does not patch running Pods. After
+deliberate recovery creates a new generation, inspect that generation before a
+long node-outage drill:
+
+```sh
+kubectl -n "$namespace" get pod "$worker_pod" \
+  -o jsonpath='{.spec.restartPolicy}{"\n"}{.spec.tolerations}{"\n"}'
+```
+
+Require `Never` and both exact `NoExecute` keys with no `tolerationSeconds`.
+Node return still requires the recorded Pod UID and actual terminated container
+states before resume. Keep the container ID, restart count and start/finish times
+in the drill receipt; a matching Pod UID alone does not prove process continuity.
+
 ## Stop, park, and resume
 
 Send these command texts in the owning Discord conversation, from its allowed
@@ -108,6 +133,9 @@ registered Discord application commands:
   recorded container terminated with exit code zero. Native cleanup and final
   history publication must finish before the process exits. A failed publication
   or interrupted process needs reconciliation, even if shutdown was requested.
+  Relay delivery tasks get the native adapter-cleanup timeout to finish their
+  receipts before disconnect. If that wait expires, the worker exits nonzero and
+  retains uncertain obligations for inspection; it does not resend them.
 - `/cluster resume <reconciliation note>` authorizes another worker generation
   against the same PVC after termination is proved. The note must describe what
   was checked. It is retained in the controller audit ledger.
