@@ -1998,9 +1998,11 @@ class RelayAdapter(BasePlatformAdapter):
         text = f"⚠️ **Command Approval Required**\n\n```\n{cmd_preview}\n```\nReason: {description}"
         if smart_denied:
             text += "\n\n**Smart DENY:** owner override applies to this one operation only."
+        prompt_metadata = dict(metadata or {})
+        request_id = prompt_metadata.pop("approval_request_id", None)
         result = await self._mint_and_send_prompt(
-            "exec_approval", {"session_key": session_key}, chat_id, prompt_kind="approval",
-            text=text, options=options, metadata=metadata,
+            "exec_approval", {"session_key": session_key, "request_id": request_id}, chat_id,
+            prompt_kind="approval", text=text, options=options, metadata=prompt_metadata,
         )
         return result if result is not None else self._PROMPT_UNAVAILABLE
 
@@ -2113,8 +2115,13 @@ class RelayAdapter(BasePlatformAdapter):
         from tools.approval import resolve_gateway_approval
 
         choice = option_id if option_id in _EXEC_APPROVAL_LABELS else "deny"
-        count = resolve_gateway_approval(str(state.get("session_key") or ""), choice)
-        label = _EXEC_APPROVAL_LABELS[choice] if count else "⌛ Approval expired — no command was waiting."
+        request_id = state.get("request_id")
+        # Old/unbound cards must never fall back to consuming the session's next
+        # approval. That command may be unrelated to the one shown on the card.
+        count = resolve_gateway_approval(
+            str(state.get("session_key") or ""), choice, request_id=request_id,
+        ) if request_id else 0
+        label = _EXEC_APPROVAL_LABELS[choice] if count else "⌛ Approval expired — this request is no longer waiting."
         # In-channel ack preserves the audit trail the native edit gives (the
         # connector's prompt message can't be edited cross-platform yet).
         self._send_lifecycle_ack(chat_id, label, ack_meta)
