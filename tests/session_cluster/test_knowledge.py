@@ -254,6 +254,76 @@ def test_native_history_export_revisions_and_inline_search_after_stop(authority,
         b.close()
 
 
+def test_shared_history_schema_is_scoped_stable_and_preserves_local_fts(authority, tmp_path, monkeypatch):
+    from copy import deepcopy
+    from tools.session_search_tool import SESSION_SEARCH_SCHEMA
+    from tools.registry import registry
+
+    native = deepcopy(SESSION_SEARCH_SCHEMA)
+    runtime = make_runtime(authority, tmp_path, monkeypatch, "schema-worker")
+    try:
+        shared = registry.get_definitions({"session_search"})[0]["function"]
+        assert "literal substring" in shared["description"]
+        assert "FTS5" not in json.dumps(shared)
+        properties = shared["parameters"]["properties"]
+        assert "not search syntax" in properties["query"]["description"]
+        assert "Ignored" in properties["sort"]["description"]
+        assert "Ignored" in properties["detail"]["description"]
+        assert "rejected" in properties["profile"]["description"]
+        assert "one exact role" in properties["role_filter"]["description"]
+        assert registry.get_definitions({"session_search"})[0]["function"] == shared
+        assert SESSION_SEARCH_SCHEMA == native
+        with monkeypatch.context() as other_profile:
+            other = tmp_path / "local-profile"
+            other.mkdir()
+            other_profile.setenv("HERMES_HOME", str(other))
+            assert registry.get_definitions({"session_search"})[0]["function"] == native
+        assert registry.get_definitions({"session_search"})[0]["function"] == shared
+    finally:
+        runtime.close()
+    assert registry.get_definitions({"session_search"})[0]["function"] == native
+
+
+def test_native_literal_search_after_stop_with_quotes_and_audience_filter(authority, tmp_path, monkeypatch):
+    from hermes_state import SessionDB
+    from tools import session_search_tool  # noqa: F401 (native registry registration)
+    from tools.registry import registry
+
+    a = make_runtime(authority, tmp_path, monkeypatch, "literal-a")
+    db = SessionDB(db_path=a.home / "state.db")
+    db.create_session("session-a", source="discord")
+    db.append_message("session-a", "user", "Cluster canary 742 uses blue lantern 742")
+    assert a.flush_history(a.home / "state.db")["acknowledged"] == 1
+    a.close()
+    db.close()
+    authority[0].revoke_worker("literal-a")
+    private = grant(authority[0], "private-canary", audience="dm:private")
+    authority[0].ingest_history(private, {"mutation_id": "private-history", "records": [
+        {"session_id": "private-session", "message_id": "1", "revision": 1,
+         "payload": {"role": "user", "content": 'Private "canary" "742" and canary 742', "timestamp": 2}}
+    ]})
+    b = make_runtime(authority, tmp_path, monkeypatch, "literal-b")
+    try:
+        search = lambda args: json.loads(registry.dispatch("session_search", args))
+        quoted = search({"query": '"canary" "742"', "limit": 5, "detail": "full"})
+        assert quoted["success"] and quoted["total_sessions"] == 0
+        assert quoted["results"] == [] and quoted["sessions"] == []
+        assert "literal substring" in quoted["hint"]
+        assert "unquoted contiguous phrase" in quoted["hint"]
+        found = search({"query": "canary 742"})
+        assert found["total_sessions"] == found["count"] == 1
+        assert found["results"][0]["session_id"] == "session-a"
+        assert found["sessions"][0]["matches"][0]["provenance"]["conversation_key"] == "literal-a"
+        assert search({"session_id": "private-session"})["success"] is False
+        assert search({"query": "Private"})["total_sessions"] == 0
+        assert search({"query": "canary 742", "role_filter": "user"})["total_sessions"] == 1
+        assert search({"query": "canary 742", "role_filter": "user,assistant"})["total_sessions"] == 0
+        assert search({"query": "canary 742", "sort": "oldest", "detail": "full"}) == found
+        assert search({"profile": "other"})["success"] is False
+    finally:
+        b.close()
+
+
 def test_revoked_backend_never_falls_back_to_local(authority, tmp_path, monkeypatch):
     from tools.memory_tool import create_memory_store, memory_tool
     runtime = make_runtime(authority, tmp_path, monkeypatch, "revoked")

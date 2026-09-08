@@ -566,6 +566,14 @@ def check_session_search_requirements() -> bool:
         return False
 
 
+def _backend_schema_overrides():
+    """Let the selected history backend describe its actual recall contract."""
+    from agent.knowledge_backend import get_knowledge_backend
+    backend = get_knowledge_backend()
+    describe = getattr(backend, "history_schema_overrides", None)
+    return describe(SESSION_SEARCH_SCHEMA) if describe is not None else None
+
+
 SESSION_SEARCH_SCHEMA = {
     "name": "session_search",
     "description": (
@@ -683,4 +691,5 @@ registry.register(
         detail=args.get("detail", "adaptive"), db=kw.get("db"), current_session_id=kw.get("current_session_id"),
         **{k: args.get(k) for k in ("role_filter", "session_id", "around_message_id", "sort", "profile")}),
     check_fn=check_session_search_requirements,
+    dynamic_schema_overrides=_backend_schema_overrides,
     emoji="🔍")

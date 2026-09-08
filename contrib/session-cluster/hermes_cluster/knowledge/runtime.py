@@ -157,6 +157,10 @@ class KnowledgeRuntime:
                 result["path"] = str(self.home / "skills" / names[0])
             return json.dumps(result)
 
+    def history_schema_overrides(self, native_schema):
+        from .search_schema import history_schema_overrides
+        return history_schema_overrides(native_schema)
+
     def search_history(self, request):
         try:
             return json.dumps(self.client.post("/v1/history/search", request))

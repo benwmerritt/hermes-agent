@@ -86,8 +86,13 @@ def _discover(db, where, args, request, limit):
                         "source": meta.get("source"), "when": meta.get("started_at"),
                         "match_message_id": first["id"], "matched_role": first.get("role"),
                         "snippet": first["content"][:2000]})
-    return {"success": True, "mode": "discover" if query else "browse", "results": results,
-            "sessions": sessions, "count": len(results), "total_sessions": total}
+    response = {"success": True, "mode": "discover" if query else "browse", "results": results,
+                "sessions": sessions, "count": len(results), "total_sessions": total}
+    if query and not results:
+        response["hint"] = ("No matching authorized sessions. Search uses a literal substring; "
+            "quotes and Boolean operators are literal characters, not search syntax. "
+            "Try one distinctive word or an unquoted contiguous phrase, or omit query to browse.")
+    return response
 
 
 def search_history(store, token, request):
