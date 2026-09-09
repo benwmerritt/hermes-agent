@@ -103,9 +103,10 @@ async def test_recovery_pins_config_while_fresh_workers_use_current_config(tmp_p
         ctrl.backend.hermes_config = ctrl.config['native_config']
         ctrl.config['personality'] = 'Third personality'
         before = copy.deepcopy(pod)
+        saved_before_retry = copy.deepcopy(saved)
         await ctrl.provision(current)
         assert api.objects['pods', current['identity']['pod_name']] == before
-        assert api.objects['configmaps', current['identity']['config_name']]['data'] == saved
+        assert api.objects['configmaps', current['identity']['config_name']]['data'] == saved_before_retry
         fresh = admit(ctrl, 'fresh-thread')
         await ctrl.provision(fresh)
         fresh = ctrl.ledger.get(fresh['id'])
