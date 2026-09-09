@@ -12,11 +12,12 @@ from hermes_cluster.ledger import Ledger, OwnershipError
 from hermes_cluster.media import MediaStore
 
 
-def fixture(tmp_path):
+def fixture(tmp_path, **overrides):
     ledger = Ledger(tmp_path / "ledger")
     media = MediaStore(tmp_path / "media", ledger)
     route, controls = AsyncMock(), AsyncMock()
     config = {"guild_id": "1", "bot_id": "2", "allowed_user_ids": ["3"], "allowed_channel_ids": ["10"]}
+    config.update(overrides)
     connector = DiscordConnector(config, route, controls, ledger=ledger, media=media, relay_url="http://connector.test")
     everyone = MagicMock(spec=discord.Role)
     everyone.id, everyone.permissions = 1, discord.Permissions(view_channel=True)
@@ -43,6 +44,42 @@ def fixture(tmp_path):
     source = SessionSource(platform=connector.adapter.platform, chat_id="11", chat_type="thread", thread_id="11",
                            parent_chat_id="10", scope_id="1", user_id="3", user_name="Owner")
     return connector, source, parent, thread, actor, everyone
+
+
+@pytest.mark.asyncio
+async def test_explicit_multi_guild_all_channels_preserves_actor_and_audience_fences(tmp_path):
+    connector, source, parent, thread, actor, everyone = fixture(
+        tmp_path, allowed_guild_ids=["1", "20"], allowed_channel_ids=[], all_channels=True)
+    assert connector.raw_allowed(thread, actor)
+    assert connector.source_allowed(source)
+    everyone.id = 20
+    thread.guild.id = 20
+    source.scope_id = "20"
+    assert connector.raw_allowed(thread, actor)
+    assert connector.source_allowed(source)
+    assert await connector.audience(source) == "public:20"
+    assert not connector.raw_allowed(thread, SimpleNamespace(id=99, bot=False))
+    assert not connector.raw_allowed(thread, SimpleNamespace(id=3, bot=True))
+    source.scope_id = "21"
+    assert not connector.source_allowed(source)
+    thread.guild.id = 21
+    assert not connector.raw_allowed(thread, actor)
+    thread.guild = None
+    assert not connector.raw_allowed(thread, actor)
+    assert connector.adapter._gate_env("DISCORD_ALLOWED_CHANNELS") == ""
+
+
+@pytest.mark.parametrize("overrides", [
+    {"allowed_guild_ids": []},
+    {"allowed_guild_ids": ["*"]},
+    {"allowed_guild_ids": "20"},
+    {"allowed_channel_ids": []},
+    {"all_channels": "false", "allowed_channel_ids": []},
+    {"all_channels": True, "allowed_channel_ids": ["10"]},
+])
+def test_invalid_or_ambiguous_guild_grants_fail_closed(tmp_path, overrides):
+    with pytest.raises(ValueError):
+        fixture(tmp_path, **overrides)
 
 
 @pytest.mark.asyncio

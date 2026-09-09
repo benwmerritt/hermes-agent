@@ -8,12 +8,42 @@ import discord
 from .ledger import OwnershipError, canonical
 
 
+def normalize_discord_scope(config: dict) -> dict:
+    """Preserve legacy grants; broad channel access requires an explicit opt-in."""
+    result = dict(config)
+    guilds = config.get("allowed_guild_ids", [config.get("guild_id")])
+    all_channels = config.get("all_channels", False)
+    if not isinstance(all_channels, bool):
+        raise ValueError("all_channels must be a boolean")
+    result["all_channels"] = all_channels
+    for name, values in (("allowed_guild_ids", guilds),
+                         ("allowed_user_ids", config.get("allowed_user_ids")),
+                         ("allowed_channel_ids", config.get("allowed_channel_ids", []))):
+        if not isinstance(values, list):
+            raise ValueError(f"{name} must be a list of Discord snowflakes")
+        values = [str(value) for value in values]
+        if any(not value.isascii() or not value.isdigit() for value in values):
+            raise ValueError(f"{name} must contain explicit Discord snowflakes")
+        if not values and (name != "allowed_channel_ids" or not all_channels):
+            raise ValueError(f"{name} must not be empty")
+        result[name] = values
+    if all_channels and result["allowed_channel_ids"]:
+        raise ValueError("all_channels cannot be combined with a channel allowlist")
+    return result
+
+
+def destination_allowed(guild_id, channel_id, parent_id, config: dict) -> bool:
+    guilds = config.get("allowed_guild_ids", [config.get("guild_id")])
+    if guild_id is None or str(guild_id) not in set(map(str, guilds)):
+        return False
+    return config.get("all_channels") is True or bool(
+        {str(channel_id), str(parent_id)} & set(map(str, config["allowed_channel_ids"])))
+
+
 def channel_allowed(channel, config: dict) -> bool:
     guild = getattr(channel, "guild", None)
-    if guild is None or str(guild.id) != str(config["guild_id"]):
-        return False
-    candidates = {str(channel.id), str(getattr(channel, "parent_id", ""))}
-    return bool(candidates & set(map(str, config["allowed_channel_ids"])))
+    return destination_allowed(getattr(guild, "id", None), channel.id,
+                               getattr(channel, "parent_id", None), config)
 
 
 def _acl(channel):

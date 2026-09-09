@@ -14,12 +14,15 @@ def main():
     parser.add_argument("--config", required=True, help="controller JSON configuration path")
     args = parser.parse_args()
     config = json.loads(Path(args.config).read_text(encoding="utf-8"))
-    required = {"data_dir", "guild_id", "bot_id", "allowed_user_ids", "allowed_channel_ids",
+    required = {"data_dir", "bot_id", "allowed_user_ids",
                 "relay_url", "namespace", "image", "native_config_path"}
     if required - config.keys():
         parser.error("controller configuration is incomplete")
-    if not config["allowed_user_ids"] or not config["allowed_channel_ids"]:
-        parser.error("explicit user and channel scopes are required")
+    from .discord_audience import normalize_discord_scope
+    try:
+        config = normalize_discord_scope(config)
+    except ValueError as exc:
+        parser.error(str(exc))
     root = Path(config["data_dir"])
     if not root.is_absolute():
         parser.error("data_dir must be absolute")

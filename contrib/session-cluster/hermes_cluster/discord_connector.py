@@ -11,7 +11,7 @@ from gateway.config import PlatformConfig
 from gateway.session import SessionSource
 from plugins.platforms.discord.adapter import DiscordAdapter
 
-from .discord_audience import audience_for, channel_allowed
+from .discord_audience import audience_for, channel_allowed, destination_allowed, normalize_discord_scope
 from .ledger import OwnershipError
 
 
@@ -87,15 +87,10 @@ class PromptView(discord.ui.View):
 
 class DiscordConnector:
     def __init__(self, config: dict, route, prompt_response, *, ledger, media, relay_url: str, fence_owner=None):
-        self.config = dict(config)
-        for name in ("guild_id", "bot_id"):
-            self.config[name] = str(config[name])
-            if not self.config[name].isdigit():
-                raise ValueError(f"{name} must be a Discord snowflake")
-        for name in ("allowed_user_ids", "allowed_channel_ids"):
-            self.config[name] = list(map(str, config[name]))
-            if not self.config[name] or any(not value.isdigit() for value in self.config[name]):
-                raise ValueError(f"{name} must contain explicit Discord snowflakes")
+        self.config = normalize_discord_scope(config)
+        self.config["bot_id"] = str(config["bot_id"])
+        if not self.config["bot_id"].isascii() or not self.config["bot_id"].isdigit():
+            raise ValueError("bot_id must be a Discord snowflake")
         self.route, self.prompt_response = route, prompt_response
         self.ledger, self.media = ledger, media
         self.fence_owner = fence_owner
@@ -150,9 +145,9 @@ class DiscordConnector:
                     and str(actor.id) in self.config["allowed_user_ids"] and channel_allowed(channel, self.config))
 
     def source_allowed(self, source) -> bool:
-        return bool(str(source.platform.value) == "discord" and str(source.scope_id) == self.config["guild_id"]
+        return bool(str(source.platform.value) == "discord"
                     and str(source.user_id) in self.config["allowed_user_ids"]
-                    and {str(source.chat_id), str(source.parent_chat_id)} & set(self.config["allowed_channel_ids"]))
+                    and destination_allowed(source.scope_id, source.chat_id, source.parent_chat_id, self.config))
 
     async def audience(self, event_or_source):
         source = getattr(event_or_source, "source", event_or_source)

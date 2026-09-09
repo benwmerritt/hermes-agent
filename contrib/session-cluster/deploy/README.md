@@ -68,6 +68,26 @@ delete the controller or remap its local PV while its guest might still be alive
 The Service is cluster-internal. `/healthz` and `/readyz` report startup and
 connection state. Operational `/status` requires the separate operator bearer.
 
+## Discord server and channel scope
+
+Legacy `guild_id` plus `allowed_channel_ids` remains supported. To admit multiple
+servers, use an explicit `allowed_guild_ids` list. To admit every channel and thread
+Discord permits the bot to access within those servers, set `all_channels: true`
+and `allowed_channel_ids: []`. Otherwise supply the specific channel or parent IDs.
+An empty channel list without the explicit opt-in fails closed. Do not combine
+`all_channels: true` with a nonempty channel list.
+
+The server grant does not authorize additional users, bots, DMs or cross-conversation
+sends. Keep `allowed_user_ids` explicit. Native mention and follow-up rules still
+apply. Audience labels retain the actual server ID, so admitting another server
+does not merge its history or private knowledge with existing conversations.
+Workers still lack Discord bot credentials and arbitrary server-administration tools.
+
+Apply scope changes through a reviewed immutable controller ConfigMap and controlled
+controller rollout. Preserve the existing authority state and worker identities.
+Do not replace the original server grant with the new server unless access removal
+is intentional.
+
 ## Worker ownership and recovery
 
 The controller creates bare Pods with `restartPolicy: Never`, one immutable
