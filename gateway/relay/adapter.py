@@ -777,6 +777,7 @@ class RelayAdapter(BasePlatformAdapter):
         # Only the production WebSocket transport exposes `auth_revoked`.
         if hasattr(self._transport, "auth_revoked"):
             self._start_revocation_monitor()
+        self._mark_connected()
         return True
 
     def _start_revocation_monitor(self) -> None:
@@ -1192,6 +1193,7 @@ class RelayAdapter(BasePlatformAdapter):
         return parts
 
     async def disconnect(self) -> None:
+        self._mark_disconnected()
         # The runner wraps this call in wait_for(adapter disconnect budget). Monitor
         # teardown and go_idle eat into the transport's drain time, so measure from
         # the top and thread the REMAINDER down — otherwise teardown is cancelled
@@ -1568,6 +1570,7 @@ class RelayAdapter(BasePlatformAdapter):
                 "chat_id": chat_id,
                 "message_id": message_id,
                 "content": content,
+                "finalize": finalize,
                 "metadata": self._text_metadata(chat_id, metadata),
             },
         )
@@ -1995,9 +1998,11 @@ class RelayAdapter(BasePlatformAdapter):
         text = f"⚠️ **Command Approval Required**\n\n```\n{cmd_preview}\n```\nReason: {description}"
         if smart_denied:
             text += "\n\n**Smart DENY:** owner override applies to this one operation only."
+        prompt_metadata = dict(metadata or {})
+        request_id = prompt_metadata.pop("approval_request_id", None)
         result = await self._mint_and_send_prompt(
-            "exec_approval", {"session_key": session_key}, chat_id, prompt_kind="approval",
-            text=text, options=options, metadata=metadata,
+            "exec_approval", {"session_key": session_key, "request_id": request_id}, chat_id,
+            prompt_kind="approval", text=text, options=options, metadata=prompt_metadata,
         )
         return result if result is not None else self._PROMPT_UNAVAILABLE
 
@@ -2100,8 +2105,7 @@ class RelayAdapter(BasePlatformAdapter):
             if handler is None:
                 logger.warning("relay prompt_response with unknown kind %r", kind)
             else:
-                # Acks are fire-and-forget: we are ON the read loop here (see
-                # _send_lifecycle_ack) and awaiting a send would self-deadlock.
+                # Cosmetic acknowledgments must not delay subsequent inbound controls.
                 await handler(self, state, option_id, chat_id, self._prompt_reply_metadata(event))
         except Exception:  # noqa: BLE001 - a resolver failure must not kill the reader
             logger.warning("relay prompt_response resolution failed", exc_info=True)
@@ -2111,8 +2115,13 @@ class RelayAdapter(BasePlatformAdapter):
         from tools.approval import resolve_gateway_approval
 
         choice = option_id if option_id in _EXEC_APPROVAL_LABELS else "deny"
-        count = resolve_gateway_approval(str(state.get("session_key") or ""), choice)
-        label = _EXEC_APPROVAL_LABELS[choice] if count else "⌛ Approval expired — no command was waiting."
+        request_id = state.get("request_id")
+        # Old/unbound cards must never fall back to consuming the session's next
+        # approval. That command may be unrelated to the one shown on the card.
+        count = resolve_gateway_approval(
+            str(state.get("session_key") or ""), choice, request_id=request_id,
+        ) if request_id else 0
+        label = _EXEC_APPROVAL_LABELS[choice] if count else "⌛ Approval expired — this request is no longer waiting."
         # In-channel ack preserves the audit trail the native edit gives (the
         # connector's prompt message can't be edited cross-platform yet).
         self._send_lifecycle_ack(chat_id, label, ack_meta)
@@ -2151,12 +2160,12 @@ class RelayAdapter(BasePlatformAdapter):
             mark_awaiting_text(clarify_id)
 
     def _send_lifecycle_ack(self, chat_id: str, text: str, metadata: Dict[str, Any]) -> None:
-        """Fire-and-forget a prompt-lifecycle ack from read-loop context.
-        _consume_prompt_response executes ON the transport read loop; an ``await
-        self.send(...)`` there is a SELF-DEADLOCK (send() blocks on an outbound_result
-        future only the read loop can resolve) — every button tap wedged the transport
-        for the full outbound timeout. Acks are cosmetic, so they ride a background
-        task; failures log at debug. The task ref is retained (asyncio holds tasks weakly)."""
+        """Send cosmetic acknowledgments without blocking ordered inbound admission.
+
+        Transports dispatch inbound separately from response frames, but waiting
+        for this acknowledgment would still delay the next control. Retain the
+        task because asyncio holds tasks weakly; failures log at debug.
+        """
 
         async def _ack() -> None:
             try:

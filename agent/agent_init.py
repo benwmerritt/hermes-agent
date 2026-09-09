@@ -1251,10 +1251,12 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
         and "memory" not in (agent.disabled_toolsets or [])
     )
     if not skip_memory or _memory_toolset_requested:
-        # Memory is optional — don't break agent init
-        with suppress(Exception):
+        # An explicitly configured authority is required; local memory remains optional.
+        from contextlib import nullcontext
+        from agent.knowledge_backend import get_knowledge_backend
+        with (nullcontext() if get_knowledge_backend() is not None else suppress(Exception)):
             from tools.memory_tool import (
-                MemoryStore, get_builtin_memory_config, get_builtin_memory_store_flags,
+                create_memory_store, get_builtin_memory_config, get_builtin_memory_store_flags,
             )
             mem_config = get_builtin_memory_config(_agent_cfg)
             agent._memory_enabled, agent._user_profile_enabled = get_builtin_memory_store_flags(
@@ -1262,7 +1264,7 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
             )
             agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
             if agent._memory_enabled or agent._user_profile_enabled:
-                agent._memory_store = MemoryStore(
+                agent._memory_store = create_memory_store(
                     memory_char_limit=mem_config.get("memory_char_limit", 2200),
                     user_char_limit=mem_config.get("user_char_limit", 1375),
                     memory_enabled=agent._memory_enabled,

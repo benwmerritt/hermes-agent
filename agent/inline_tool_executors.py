@@ -94,6 +94,10 @@ def _callback_tool(module: str, func: str, callback_attr: str, *arg_specs: _ArgS
 
 
 def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
+    from agent.knowledge_backend import get_knowledge_backend
+    backend = get_knowledge_backend()
+    if backend is not None:
+        return backend.search_history({**args, "current_session_id": agent.session_id})
     session_db = agent._get_session_db_for_recall()
     if not session_db:
         from hermes_state import format_session_db_unavailable

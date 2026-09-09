@@ -364,6 +364,10 @@ class WebSocketRelayTransport:
 
         self._ws: Any = None
         self._reader: Optional[asyncio.Task[None]] = None
+        # Inbound handlers can send a reply and await its outbound_result. Keep
+        # their ordered dispatch off the reader that must receive that result.
+        self._inbound_frames: asyncio.Queue[str] = asyncio.Queue()
+        self._inbound_dispatcher: Optional[asyncio.Task[None]] = None
         self._inbound: Optional[InboundHandler] = None
         self._interrupt_inbound_handler: Any = None
         self._passthrough_handler: Any = None
@@ -490,7 +494,7 @@ class WebSocketRelayTransport:
                         await asyncio.wait(pending, timeout=grace)
             # getattr default: some teardown tests build the transport via
             # object.__new__, so _auth_retry may be absent.
-            for attr in ("_supervisor", "_auth_retry", "_reader"):
+            for attr in ("_supervisor", "_auth_retry", "_inbound_dispatcher", "_reader"):
                 task = getattr(self, attr, None)
                 if task is not None:
                     task.cancel()
@@ -708,7 +712,7 @@ class WebSocketRelayTransport:
                     *lines, buf = buf.split("\n")
                     for line in lines:
                         if line.strip():
-                            await self._handle_frame(line)
+                            await self._receive_frame(line)
             except Exception as exc:  # noqa: BLE001 - log + let the task end; reconnection handled below
                 # A post-handshake 4401 is a revocation ONLY if it also hits a fresh
                 # token: an EXPIRED token gets the same 4401 (a scale-to-zero suspend
@@ -904,6 +908,30 @@ class WebSocketRelayTransport:
             self._redial_release.clear()
 
     # ── inbound frame dispatch ───────────────────────────────────────────
+    async def _receive_frame(self, line: str) -> None:
+        try:
+            frame = json.loads(line)
+        except json.JSONDecodeError:
+            logger.warning("relay: skipping malformed frame")
+            return
+        if frame.get("type") in {"inbound", "passthrough_forward", "interrupt_inbound"}:
+            self._inbound_frames.put_nowait(line)
+            if self._inbound_dispatcher is None or self._inbound_dispatcher.done():
+                self._inbound_dispatcher = asyncio.create_task(
+                    self._dispatch_inbound_frames(), name="relay-inbound-dispatcher")
+            return
+        await self._handle_frame(line)
+
+    async def _dispatch_inbound_frames(self) -> None:
+        while True:
+            line = await self._inbound_frames.get()
+            try:
+                await self._handle_frame(line)
+            except Exception:
+                logger.exception("relay inbound dispatch failed; delivery remains unacknowledged")
+            finally:
+                self._inbound_frames.task_done()
+
     async def _handle_frame(self, line: str) -> None:
         try:
             frame = json.loads(line)

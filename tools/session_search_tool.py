@@ -534,6 +534,13 @@ def session_search(query: str = "", role_filter: str = None, limit: int = 3, db=
                    current_session_id: str = None, session_id: str = None, around_message_id: int = None,
                    window: int = 5, sort: str = None, profile: str = None, detail: str = "adaptive") -> str:
     """Run session search, closing DBs opened here. Positional order is frozen for old callers."""
+    from agent.knowledge_backend import get_knowledge_backend
+    backend = get_knowledge_backend()
+    if backend is not None:
+        return backend.search_history({"query": query, "role_filter": role_filter, "limit": limit,
+            "current_session_id": current_session_id, "session_id": session_id,
+            "around_message_id": around_message_id, "window": window, "sort": sort,
+            "profile": profile, "detail": detail})
     from hermes_state import format_session_db_unavailable
     from hermes_state_registry import acquire, release_or_close
     owned_dbs: List[Any] = []
@@ -557,6 +564,14 @@ def check_session_search_requirements() -> bool:
         return _default_db_path().parent.exists()
     except ImportError:
         return False
+
+
+def _backend_schema_overrides():
+    """Let the selected history backend describe its actual recall contract."""
+    from agent.knowledge_backend import get_knowledge_backend
+    backend = get_knowledge_backend()
+    describe = getattr(backend, "history_schema_overrides", None)
+    return describe(SESSION_SEARCH_SCHEMA) if describe is not None else None
 
 
 SESSION_SEARCH_SCHEMA = {
@@ -676,4 +691,5 @@ registry.register(
         detail=args.get("detail", "adaptive"), db=kw.get("db"), current_session_id=kw.get("current_session_id"),
         **{k: args.get(k) for k in ("role_filter", "session_id", "around_message_id", "sort", "profile")}),
     check_fn=check_session_search_requirements,
+    dynamic_schema_overrides=_backend_schema_overrides,
     emoji="🔍")

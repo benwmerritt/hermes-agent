@@ -1300,13 +1300,19 @@ class TurnRunner:
         cmd = _redact_approval_command(approval_data.get("command", ""))
         desc = approval_data.get("description", "dangerous command")
         flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
+        # Bind interactive responses to this request even if its send completes
+        # after interruption or timeout and another command is already waiting.
+        approval_metadata = dict(ctx._status_thread_metadata or {})
+        approval_metadata.pop("approval_request_id", None)
+        if approval_data.get("request_id"):
+            approval_metadata["approval_request_id"] = approval_data["request_id"]
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
         if getattr(type(adapter), "send_exec_approval", None) is not None:
             try:
                 fut = self._schedule(
                     adapter.send_exec_approval(
                         chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
-                        description=desc, metadata=ctx._status_thread_metadata, **flags,
+                        description=desc, metadata=approval_metadata, **flags,
                     ),
                     "send_exec_approval scheduling error",
                 )

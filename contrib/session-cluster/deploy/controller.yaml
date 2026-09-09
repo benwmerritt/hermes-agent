@@ -1,0 +1,109 @@
+# Replace the node and digest in a private copy before applying.
+# Supply hermes-controller-config ConfigMap and hermes-controller-credentials
+# Secret independently. No private configuration belongs in this directory.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hermes-controller-state
+  namespace: hermes-session-cluster
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: hermes-session-local
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hermes-controller
+  namespace: hermes-session-cluster
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: hermes-controller
+  template:
+    metadata:
+      labels:
+        app: hermes-controller
+    spec:
+      serviceAccountName: hermes-controller
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 120
+      nodeSelector:
+        kubernetes.io/hostname: replace-with-dedicated-node
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10000
+        runAsGroup: 10000
+        fsGroup: 10000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: controller
+          image: ghcr.io/example/hermes-session-cluster:replace-with-verified-digest
+          imagePullPolicy: IfNotPresent
+          command: [python, -m, hermes_cluster, --config, /config/controller.json]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: HOME
+              value: /data
+            - name: HERMES_HOME
+              value: /data/hermes
+          envFrom:
+            - secretRef:
+                name: hermes-controller-credentials
+            - secretRef:
+                name: hermes-controller-operator
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+              ephemeral-storage: 128Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+              ephemeral-storage: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+          volumeMounts:
+            - name: state
+              mountPath: /data
+            - name: config
+              mountPath: /config
+              readOnly: true
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: hermes-controller-state
+        - name: config
+          configMap:
+            name: hermes-controller-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hermes-controller
+  namespace: hermes-session-cluster
+spec:
+  type: ClusterIP
+  selector:
+    app: hermes-controller
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

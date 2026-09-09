@@ -232,6 +232,9 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
 def _find_skill_in_other_profiles(name: str) -> List[Tuple[str, Path]]:
     """``(profile, skill_dir)`` pairs for OTHER profiles holding ``name`` (so the not-found
     error can explain a wrong-profile mistake). Fail-quiet."""
+    from agent.knowledge_backend import get_knowledge_backend, staging
+    if staging.get() or get_knowledge_backend() is not None:
+        return []  # An authority-scoped worker cannot reveal other profiles in error hints.
     matches: List[Tuple[str, Path]] = []
     try:
         from hermes_constants import get_default_hermes_root
@@ -624,6 +627,10 @@ def _skill_manage_from(payload: Dict[str, Any], **extra) -> str:
 
 def apply_skill_pending(payload: Dict[str, Any]) -> str:
     """Replay a staged skill write, bypassing the gate (the /skills approve handler)."""
+    from agent.knowledge_backend import approved_knowledge_replay
+    replayed = approved_knowledge_replay(payload, lambda: apply_skill_pending(payload))
+    if replayed is not None:
+        return replayed if isinstance(replayed, str) else json.dumps(replayed)
     token = _skill_gate_bypass.set(True)
     try:
         return _skill_manage_from(payload)
@@ -693,9 +700,13 @@ _REQUIRED_ARGS = {
 
 
 def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
-                    session_id, ledger_before) -> None:
+                    session_id, ledger_before, refresh_prompt=True, push_sync=True,
+                    extra_evidence=None) -> None:
     """Best-effort post-mutation side effects (never break the tool): ledger, prompt-cache
     clear, curator telemetry, debounced sync push."""
+    from agent.knowledge_backend import staging
+    if staging.get():
+        return
     with suppress(Exception):
         from tools import skill_ledger as _ledger
         _post = _find_skill(name)
@@ -703,12 +714,14 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
         _evidence = ({"absorbed_into": absorbed_into, "archived": bool(result.get("_archived"))}
                      if action == "delete" else {})
         _evidence.update({k: v for k, v in (("session_id", session_id), ("file_path", file_path)) if v})
+        _evidence.update(extra_evidence or {})
         _ledger.record_mutation(
             action, name, before=ledger_before if ledger_before is not None else [],
             after_root=_post["path"] if _post else None, evidence=_evidence)
-    with suppress(Exception):
-        from agent.prompt_builder import clear_skills_system_prompt_cache
-        clear_skills_system_prompt_cache(clear_snapshot=True)
+    if refresh_prompt:
+        with suppress(Exception):
+            from agent.prompt_builder import clear_skills_system_prompt_cache
+            clear_skills_system_prompt_cache(clear_snapshot=True)
     # Curator telemetry: only the background review fork marks a skill agent-created
     # (foreground creates belong to the user). A recoverable curator archive keeps its
     # record as STATE_ARCHIVED (`hermes curator status`/`restore`); only a hard delete forgets.
@@ -728,8 +741,9 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
         elif action == "delete" and not result.get("_archived"):
             forget(name)
     # Only AFTER the write gate passed (staged writes returned early): never push un-reviewed content.
-    with suppress(Exception):
-        _maybe_debounced_sync_push(name)
+    if push_sync:
+        with suppress(Exception):
+            _maybe_debounced_sync_push(name)
 
 
 def skill_manage(
@@ -751,6 +765,11 @@ def skill_manage(
                 absorbed_into=absorbed_into)
     if (gate_result := _apply_skill_write_gate(action, name, **args)) is not None:
         return gate_result
+    from agent.knowledge_backend import authoritative_skill_mutation
+    shared_result = authoritative_skill_mutation({"action": action, "name": name, **args,
+                                                  "task_id": task_id, "session_id": session_id})
+    if shared_result is not None:
+        return shared_result
     # Ledger pre-capture: telemetry, not a gate — failures must NEVER block the mutation. delete
     # destroys the whole package (consolidation may have re-homed support files first), so
     # complete it from the newest curator backup or a restore is hollow.
