@@ -10,7 +10,7 @@ import logging
 
 from gateway.config import Platform, PlatformConfig
 from gateway.relay.adapter import RelayAdapter
-from gateway.run import GatewayRunner, _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT
+from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_key
 
 logger = logging.getLogger(__name__)
@@ -91,13 +91,16 @@ class ConversationGateway(GatewayRunner):
         # committed. Preserve native pending state for an explicit human follow-up.
         return 0
 
+    def _relay_delivery_drain_timeout_secs(self) -> float:
+        # Native final-send receipts and completion hooks can exceed the separate
+        # five-second transport-disconnect budget on a healthy Discord connection.
+        return 30.0
+
     async def _bounded_adapter_teardown(self, adapter, platform, *, profile=None) -> None:
         # Native agent drain ends before adapter-owned final sends and their ledger
         # acknowledgements. Let those settle before native teardown cancels them.
         if platform == Platform.RELAY:
-            timeout = self._adapter_disconnect_timeout_secs()
-            if timeout <= 0:
-                timeout = _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT
+            timeout = self._relay_delivery_drain_timeout_secs()
             deadline = asyncio.get_running_loop().time() + timeout
             current = asyncio.current_task()
             while pending := {task for task in adapter._session_tasks.values()

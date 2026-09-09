@@ -145,8 +145,9 @@ registered Discord application commands:
   recorded container terminated with exit code zero. Native cleanup and final
   history publication must finish before the process exits. A failed publication
   or interrupted process needs reconciliation, even if shutdown was requested.
-  Relay delivery tasks get the native adapter-cleanup timeout to finish their
-  receipts before disconnect. If that wait expires, the worker exits nonzero and
+  Relay delivery tasks get a separate 30-second window to finish their
+  receipts and native completion hooks before transport disconnect. The native
+  active-turn drain setting and bounded transport-disconnect timeout remain separate. If that wait expires, the worker exits nonzero and
   retains uncertain obligations for inspection; it does not resend them.
   The controller records park intent before sending the shutdown request. Only
   that conversation generation's durable intent plus verified successful
