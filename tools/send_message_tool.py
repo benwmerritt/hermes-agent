@@ -369,7 +369,13 @@ def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id:
     from gateway.session_context import get_session_env
     auto_platform = get_session_env("HERMES_CRON_AUTO_DELIVER_PLATFORM", "").strip().lower()
     auto_chat_id = get_session_env("HERMES_CRON_AUTO_DELIVER_CHAT_ID", "").strip()
-    if not (auto_platform and auto_chat_id and auto_platform == platform_name and auto_chat_id == str(chat_id)
+    def recipient(value):
+        # Photon accepts both forms for the same one-to-one conversation.
+        # Validate the whole GUID before stripping its prefix.
+        from tools.send_message_targets import _PHOTON_DM_GUID_RE
+        return value[6:] if platform_name == "photon" and _PHOTON_DM_GUID_RE.fullmatch(value) else value
+
+    if not (auto_platform and auto_chat_id and auto_platform == platform_name and recipient(auto_chat_id) == recipient(str(chat_id))
             and (get_session_env("HERMES_CRON_AUTO_DELIVER_THREAD_ID", "").strip() or None) == thread_id):
         return None
     target_label = f"{platform_name}:{chat_id}" + (f":{thread_id}" if thread_id is not None else "")
