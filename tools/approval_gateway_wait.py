@@ -96,7 +96,7 @@ def _await_coalesced_leader(session_key: str, leader, payload: dict):
     else:
         choice = leader.result
         resolved = choice is not None
-    if choice == "once":
+    if choice in {"once", "instruction_15m"}:
         # The post hook fires for the fresh prompt's own lifecycle, not here.
         return None
     return _finish(payload, resolved, choice, getattr(leader, "reason", None), coalesced=True)

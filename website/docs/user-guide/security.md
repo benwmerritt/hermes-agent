@@ -93,6 +93,36 @@ YOLO mode disables **all** dangerous command safety checks for the session — *
 
 For destructive session slash commands (`/clear`, `/new` / `/reset`, `/undo`, `/quit --delete` — `/exit --delete` is an alias), the CLI also prompts for confirmation before running them. See [Slash Commands — Confirmation prompts for destructive commands](../reference/slash-commands.md#confirmation-prompts-for-destructive-commands).
 
+### Temporary approval for instruction-file review edits
+
+`write_file` and `patch` ask for human consent before changing protected project
+instructions such as `AGENTS.md`, `CLAUDE.md`, `SOUL.md`, and `.cursorrules`.
+YOLO, Smart approval, and ordinary session or permanent approvals do not bypass
+this separate gate. The default permission covers one operation.
+
+In a local linked Git worktree, the messaging gateway can also offer:
+
+> Allow repeated edits to exactly these files for 15 minutes in this session only.
+
+The prompt lists every resolved file path and the worktree, followed by a
+request-specific `/approve instruction-15m <request-id>` command. Use the command
+shown in that prompt. It is an explicit human choice, not a permission inferred
+from conversation text or the generic Session button. The sender must be an
+identified non-bot participant admitted by the gateway; internal events and events
+without gateway-control permission cannot grant it. A multi-file patch grants
+only its listed protected targets, never all files with the same basename.
+
+The permission stays in memory, expires after 15 minutes, and is revoked by
+normal session cleanup. It does not transfer to another session, child task,
+process, or worktree. Main checkouts, remote backends, symlink paths, nested
+repositories, and files under the active `HERMES_HOME` cannot acquire this scope.
+Changing the worktree or path identity invalidates it. Other write guards still
+apply, and denial or missing approval delivery fails closed.
+
+CLI, TUI/Desktop, API, and transports without this explicit option retain the
+one-operation flow. This is a file-tool permission, not an operating-system
+sandbox against arbitrary same-user shell code or concurrent filesystem changes.
+
 ### Supervised-gateway lifecycle restriction
 
 The terminal tool has a separate, non-overridable guard against stopping or
