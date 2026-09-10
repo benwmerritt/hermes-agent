@@ -148,6 +148,12 @@ def resolve_gateway_approval(session_key: str, choice: str,
         queue = _gateway_queues.get(session_key)
         if not queue:
             return 0
+        if choice == "instruction_15m":
+            # This option must target one exact, displayed request, never /approve all.
+            if resolve_all or not request_id or not any(
+                    e.data.get("request_id") == request_id and e.data.get("instruction_scope")
+                    for e in queue):
+                return 0
         if request_id:
             targets = [entry for entry in queue if entry.data.get("request_id") == request_id]
             if not targets:
@@ -249,6 +255,8 @@ def clear_session(session_key: str) -> None:
     """Remove all approval and yolo state for a given session."""
     if not session_key:
         return
+    from tools.approval_instruction_scope import clear_session as clear_instruction_scope
+    clear_instruction_scope(session_key)
     with _lock:
         _session_approved.pop(session_key, None)
         _session_yolo.discard(session_key)

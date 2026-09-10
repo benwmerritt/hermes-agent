@@ -1309,7 +1309,7 @@ class TurnRunner:
         desc = approval_data.get("description", "dangerous command")
         flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
-        if getattr(type(adapter), "send_exec_approval", None) is not None:
+        if not approval_data.get("instruction_scope") and getattr(type(adapter), "send_exec_approval", None) is not None:
             try:
                 fut = self._schedule(
                     adapter.send_exec_approval(
@@ -1368,17 +1368,29 @@ class TurnRunner:
                 logger.warning("Button-based approval failed, falling back to text: %s", e)
         # Plain-text prompt with the adapter's typed prefix (e.g. `!approve`): typed "/" is blocked
         # in Slack threads and reserved by Matrix clients.
-        msg = _format_exec_approval_fallback(cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags)
+        prefix = getattr(adapter, "typed_command_prefix", "/")
+        msg = _format_exec_approval_fallback(cmd, desc, prefix, **flags)
+        if approval_data.get("instruction_scope"):
+            # A separate, fully labelled text option avoids relabelling a generic Session button.
+            from tools.approval_instruction_scope import format_scope_option
+            msg += "\n\n" + format_scope_option(approval_data, prefix)
         try:
             # Mark as approval prompt so WeCom routes through the control lane.
             metadata = {**(ctx._status_thread_metadata or {}), "is_approval_prompt": True}
             fut = self._schedule(
                 adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
             )
-            if fut is not None:
+            if approval_data.get("instruction_scope"):
+                if fut is None or not fut.result(timeout=15).success:
+                    raise RuntimeError("Temporary instruction approval could not be delivered")
+            elif fut is not None:
                 fut.result(timeout=15)
         except Exception as e:
             logger.error("Failed to send approval request: %s", e)
+            if approval_data.get("instruction_scope"):
+                raise
+
+    setattr(_approval_notify_sync, "supports_instruction_scope", True)
 
     # ── run_sync phases ─────────────────────────────────────────────────────────────────────
 

@@ -4,7 +4,7 @@ Every guard returns ``None`` when the write may proceed, else an error string
 the tool returns verbatim.
 Guards, in the order the tools apply them: ``_check_sensitive_path`` (hard
 deny), ``_check_binary_document_write``, ``_check_protected_instruction_write``
-(ALWAYS ask), ``_check_approval_required_write`` (normal gate),
+(human consent), ``_check_approval_required_write`` (normal gate),
 ``_check_cross_profile_path`` (sandbox-mirror lost-work), ``_is_internal_file_tool_content``.
 """
 
@@ -97,7 +97,7 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
 # ── Protected agent-instruction files (always-ask approval gate) ─────────
 # Files that steer FUTURE agent behavior are a prompt-injection persistence
 # vector (AGENTS.md / CLAUDE.md / SOUL.md / .cursorrules / project .hermes tree).
-# Writes ALWAYS require human approval — even under --yolo — and fail closed
+# Writes require human approval — even under --yolo — and fail closed
 # without a human channel. Basenames match in ANY directory, case-insensitively.
 # Ported from: RooCodeInc/Roo-Code RooProtectedController (Apache-2.0). Companion: the terminal-tool vector
 # is covered separately (#58631); this gate covers the write_file/patch vector. Symlink lesson from #41351:
@@ -175,13 +175,19 @@ _APPROVAL_UNAVAILABLE = "requires approval but the approval subsystem is unavail
 _NO_HUMAN = "requires approval but no interactive user or gateway is present to approve it."
 
 
-def _request_protected_instruction_approval(reasons: list[str], task_id: str = "default") -> str | None:
+def _request_protected_instruction_approval(reasons: list[str], task_id: str = "default",
+                                             *, paths: list[str] | None = None) -> str | None:
     """Ask the human to approve a write to protected instruction file(s); ``None`` when approved.
 
     Deliberately NOT routed through ``_run_approval_gate`` (honors --yolo and
-    allowlists): this gate is one-operation approval EVERY time, no persisted
-    scope, fail-closed without a human channel.
+    allowlists). Default: one operation, fail closed without a human channel.
+    Messaging users may explicitly select 15 minutes for exact linked-worktree
+    paths. That scope is memory-only and never shared with child sessions.
     """
+    from tools import approval_instruction_scope as temporary
+    scope = temporary.candidate(paths, task_id) if paths else None
+    if temporary.is_approved(scope):
+        return None
     targets = ", ".join(dict.fromkeys(reasons))
     description = (
         f"Write to protected agent-instruction file(s): {targets}. "
@@ -205,7 +211,7 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
         return blocked.format(why=_APPROVAL_UNAVAILABLE)
 
     # Gateway surface: block on the button round-trip when a notify callback
-    # is registered for this session. One-operation only — no scope buttons.
+    # is registered for this session.
     session_key = get_current_session_key()
     try:
         with _approval._lock:
@@ -213,6 +219,7 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
     except Exception:
         notify_cb = None
 
+    scope_offered = False
     if notify_cb is not None:
         approval_data = {
             "command": display,
@@ -221,6 +228,9 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
             "description": description,
             "allow_permanent": False,
             "allow_session": False}
+        scope_offered = scope is not None and getattr(notify_cb, "supports_instruction_scope", False) is True
+        if scope_offered:
+            approval_data["instruction_scope"] = temporary.request_data(scope)
         decision = _await_gateway_decision(session_key, notify_cb, approval_data, surface="gateway")
         if decision.get("notify_failed"):
             return blocked.format(why="requires approval but the approval request could not be delivered.")
@@ -239,7 +249,13 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
         choice = prompt_dangerous_approval(
             display, description, allow_permanent=False, allow_session=False, approval_callback=callback)
         timed = choice == "timeout"
-    # Any tapped scope is a one-operation grant; nothing is persisted.
+    if not timed and choice == temporary.CHOICE and notify_cb is not None and scope_offered and scope is not None and paths:
+        current = temporary.candidate(paths, task_id)
+        if (current is not None and current[:-1] == scope[:-1]
+                and current[-1] is scope[-1] and temporary.grant(scope)):
+            return None
+        return blocked.format(why="temporary approval scope changed before the write.")
+    # Legacy broad choices still cover only this operation, never a temporary grant.
     if not timed and choice in {"once", "session", "always"}:
         return None
     return timed_out if timed else denied
@@ -251,11 +267,13 @@ def _check_protected_instruction_write(paths: list[str], task_id: str = "default
     enabled, extra = _protected_instruction_config()
     if not enabled:
         return None
-    reasons = [r for r in (_protected_instruction_reason(p, task_id, enabled=enabled, extra_patterns=extra)
-                           for p in paths) if r]
-    if not reasons:
+    protected = [p for p in paths if _protected_instruction_reason(
+        p, task_id, enabled=enabled, extra_patterns=extra)]
+    if not protected:
         return None
-    return _request_protected_instruction_approval(reasons, task_id)
+    # Exact resolved labels prevent different AGENTS.md files collapsing into one target.
+    reasons = [str(_resolve_path_for_task(p, task_id)) for p in protected]
+    return _request_protected_instruction_approval(reasons, task_id, paths=protected)
 
 
 def _check_approval_required_write(paths: list[str], task_id: str = "default") -> str | None:

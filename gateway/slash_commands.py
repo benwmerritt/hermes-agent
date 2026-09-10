@@ -1129,12 +1129,27 @@ class GatewaySlashCommandsMixin(
         """Handle /approve — unblock waiting agent thread(s). They block inside tools/approval.py;
         signalling the event resumes them so the command executes inline (same flow as the CLI)."""
         from tools.approval import resolve_gateway_approval
+        if getattr(event, "allow_gateway_control", True) is not True:
+            return "This event cannot approve gateway actions."
         session_key, stale = self._blocking_approval_or_stale(event, "gateway.approval_expired",
                                                               "gateway.approve.no_pending")
         if stale:
             return stale
         # Args: "all", "all session", "all always", "session", "always" ("always" beats "session").
         args = event.get_command_args().strip().lower().split()
+        if args and args[0] == "instruction-15m":
+            if (getattr(event, "internal", False) is not False
+                    or getattr(event.source, "is_bot", None) is not False
+                    or not getattr(event.source, "user_id", None)):
+                return "Temporary instruction approval requires an identified human sender."
+            if len(args) != 2:
+                return "Use the exact instruction-15m command shown on the approval request."
+            count = resolve_gateway_approval(session_key, "instruction_15m", request_id=args[1])
+            if not count:
+                return "That temporary instruction approval is unavailable or has expired."
+            return await self._deliver_approval_confirmation(
+                event, "Approved exactly the listed instruction files for 15 minutes in this session only.",
+                "approve")
         choices = {_APPROVE_CHOICE_BY_ARG[a] for a in args if a in _APPROVE_CHOICE_BY_ARG}
         choice = "always" if "always" in choices else "session" if "session" in choices else "once"
         count = resolve_gateway_approval(session_key, choice, resolve_all="all" in args)
