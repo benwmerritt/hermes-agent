@@ -381,6 +381,10 @@ def _normalize_binary_payload(payload: Dict[str, Any]) -> _Normalized:
     mime = payload.get("mimeType") or ""
     # iMessage voice notes are CAF and may arrive "(unnamed)", so MIME is a signal too.
     is_voice = is_voice or name.lower().endswith(".caf") or mime == "audio/x-caf"
+    # Ben's "talk to Wallace" Shortcut sends a recorded .m4a as a plain audio attachment.
+    # Any audio Ben sends over iMessage is meant to be heard, so route all audio/* into
+    # the voice/STT path rather than parking it as an untranscribed file.
+    is_voice = is_voice or mime.startswith("audio/") or name.lower().endswith((".m4a", ".mp3", ".wav", ".aac", ".ogg", ".opus", ".flac"))
     mtype = MessageType.VOICE if is_voice else _attachment_message_type(mime)
     label = "voice" if is_voice else "attachment"
     cached = _cache_inbound_attachment(payload, name, mime, force_audio=is_voice)
