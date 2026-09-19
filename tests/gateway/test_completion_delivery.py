@@ -782,6 +782,8 @@ def test_same_tick_async_batch_coalesces_into_one_turn_and_acks_all_rows(
     adapter.handle_message.assert_awaited_once()
     delivered = adapter.handle_message.await_args.args[0]
     assert "3 background subagent delegations" in delivered.text
+    assert 'respond with exactly "[SILENT]"' in delivered.text
+    assert 'Do not return an empty response' in delivered.text
     for i in range(3):
         assert f"Result for deleg_batch_{i}" in delivered.text
     for event in events:

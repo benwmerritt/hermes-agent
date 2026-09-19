@@ -1649,7 +1649,7 @@ class GatewayNotificationsMixin:
                 f"\n- … and {omitted} more completion(s); inspect them with "
                 "the process tool if they affect the conclusion."
             )
-        lines.append("If a result does not change the current conclusion, absorb it silently.]")
+        lines.append("If no result changes the current conclusion, respond with exactly \"[SILENT]\" and nothing else. Do not return an empty response; the gateway hides that marker without retrying or switching providers.]")
         return "\n".join(lines)
 
     def _record_coalesced_completion_siblings(self, events: list[dict]) -> None:
@@ -1822,7 +1822,7 @@ class GatewayNotificationsMixin:
             f"[IMPORTANT: {len(blocks)} background subagent delegations "
             "completed for this session. Treat these results as one "
             "completion batch and send at most one consolidated user-facing "
-            "response. If a result does not change the current conclusion, absorb it silently.]"
+            "response. If no result changes the current conclusion, respond with exactly \"[SILENT]\" and nothing else. Do not return an empty response; the gateway hides that marker without retrying or switching providers.]"
         )
         consolidated = "\n\n".join([header, *blocks])
         delivered = await self._deliver_completion_notification(
