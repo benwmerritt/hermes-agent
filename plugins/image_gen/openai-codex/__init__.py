@@ -45,6 +45,29 @@ _NO_AUTH = (
     "No Codex/ChatGPT OAuth credentials available. Run "
     "`hermes auth add openai-codex` (or `hermes setup` → Codex) to sign in.")
 
+# One rotation per pooled credential: with N Codex accounts a 401/429 on each is tried once before failing.
+_MAX_CREDENTIAL_ROTATIONS = 8
+
+
+class CodexImageHTTPError(RuntimeError):
+    """HTTP failure from the Codex images API; carries ``status_code`` so the credential pool can rotate."""
+
+    def __init__(self, status_code: int, message: str) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def _rotate_codex_credential(exc: Exception, failed_token: str) -> bool:
+    """Mark the pooled Codex credential behind ``failed_token`` exhausted on 401/402/429 and move to
+    the next one. True when another credential is now selectable."""
+    try:
+        from agent.auxiliary_client import _recover_provider_pool
+
+        return bool(_recover_provider_pool("openai-codex", exc, failed_api_key=failed_token))
+    except Exception as rotate_exc:
+        logger.debug("Codex image credential rotation failed: %s", rotate_exc)
+        return False
+
 
 def _summarize_error_body(body: str) -> str:
     """Bounded summary preferring parsed ``error.message`` (Codex bodies carry leading metadata)."""
@@ -204,7 +227,8 @@ def _post_image_request(
     with httpx.Client(timeout=timeout, headers=headers) as http:
         response = http.post(f"{_CODEX_BASE_URL}/{path}", json=body)
     if response.status_code >= 400:
-        raise RuntimeError(
+        raise CodexImageHTTPError(
+            response.status_code,
             f"Codex images API returned HTTP {response.status_code}: "
             f"{_summarize_error_body(response.text)}")
     payload = response.json()
@@ -277,12 +301,31 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
         except Exception as exc:
             return fail(f"Invalid image input for Codex image editing: {exc}", "invalid_image_input")
 
-        try:
-            payload = _post_image_request(
-                token, prompt=prompt, size=size, quality=meta["quality"], input_images=input_images or None)
-        except Exception as exc:
-            logger.debug("Codex image generation failed", exc_info=True)
-            return fail(f"OpenAI image generation via Codex auth failed: {exc}", "api_error")
+        rotations = 0
+        while True:
+            try:
+                payload = _post_image_request(
+                    token, prompt=prompt, size=size, quality=meta["quality"],
+                    input_images=input_images or None)
+                break
+            except CodexImageHTTPError as exc:
+                # 401 (invalidated token) / 402 / 429 (usage limit) on one pooled account: mark it
+                # exhausted and retry with the next credential, if any.
+                if (exc.status_code in (401, 402, 429) and rotations < _MAX_CREDENTIAL_ROTATIONS
+                        and _rotate_codex_credential(exc, token)):
+                    next_token = _read_codex_access_token()
+                    if next_token and next_token != token:
+                        rotations += 1
+                        logger.warning(
+                            "Codex image generation got HTTP %s; rotated to the next Codex credential "
+                            "(%s/%s).", exc.status_code, rotations, _MAX_CREDENTIAL_ROTATIONS)
+                        token = next_token
+                        continue
+                logger.debug("Codex image generation failed", exc_info=True)
+                return fail(f"OpenAI image generation via Codex auth failed: {exc}", "api_error")
+            except Exception as exc:
+                logger.debug("Codex image generation failed", exc_info=True)
+                return fail(f"OpenAI image generation via Codex auth failed: {exc}", "api_error")
 
         data = payload.get("data")
         b64 = data[0].get("b64_json") if isinstance(data, list) and data and isinstance(data[0], dict) else None
