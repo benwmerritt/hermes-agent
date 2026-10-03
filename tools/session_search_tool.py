@@ -38,6 +38,33 @@ _DEMOTED_SESSION_SOURCES = ("cron",)
 # Bounding message COUNT (head/tail) is not enough when content per message is
 # unbounded; the agent can scroll around a message for detail (#114344).
 _READ_MAX_CONTENT = 2000
+# Scroll-shape per-message cap: the same window the discovery shape hydrates, so
+# scrolling into a discovery hit never returns more per message than the hit did.
+_SCROLL_MAX_CONTENT = 4000
+# Whole-response content budget (message content + tool-call arguments), applied after
+# the per-message caps. Every cap above bounds one field of one message; a 30-message
+# read or a detail=full discovery over 10 sessions is still a message-COUNT window, and
+# a tool_calls payload (a write_file body, a skill create) rode along uncapped. Past
+# the budget, lower-priority messages are cut to what remains or stubbed with their id
+# and role kept, so the agent can scroll to exactly what was dropped.
+_RESPONSE_CONTENT_BUDGET = 40_000
+# A cut below this many chars is a stub, not a fragment.
+_BUDGET_CONTENT_FLOOR = 200
+# Content every anchor (the matched message, the scroll centre) keeps before any message's
+# tool-call arguments or any context message is paid for: limit<=10 anchors x this is well
+# under the budget, so a lower-ranked hit never comes back as an empty stub.
+_ANCHOR_EVIDENCE_CHARS = 1500
+# The Markdown export is the recovery route because it is the one that carries compaction-
+# archived rows (``include_compacted=True`` in hermes_cli/sessions_cmd.py) and tool-call
+# arguments in full; the default JSONL export omits archived rows.
+_BUDGET_RECOVERY = (
+    "Truncated/omitted messages keep their id and role: scroll to one with "
+    "session_search(session_id=..., around_message_id=<id>, window=1) for the "
+    "per-message view (capped, live rows only), or export the complete transcript "
+    "including compaction-archived rows and full tool-call arguments with the "
+    "terminal: hermes sessions export <dir> --format md --session-id <session_id> "
+    "(prefix `hermes -p <profile>` when the session's link names a profile), then "
+    "read_file the .md it writes.")
 # FTS rows scanned before dedup-by-lineage — well above the distinct sessions a query
 # returns, so interactive matches buried under cron hits survive the demotion pass.
 _DISCOVER_SCAN_LIMIT = 300
@@ -234,6 +261,38 @@ def _is_compacted_message(db, message_id) -> bool:
     return _is_compacted_state(_get_message_storage_state(db, message_id))
 
 
+def _tool_calls_chars(tool_calls: Any) -> int:
+    """Chars of ``function.arguments`` across *tool_calls* — the payload the budget counts;
+    ids, types and names are handles and ride free, so a stubbed call costs nothing."""
+    total = 0
+    for call in tool_calls if isinstance(tool_calls, list) else ():
+        fn = call.get("function") if isinstance(call, dict) else None
+        args = fn.get("arguments") if isinstance(fn, dict) else None
+        if args is not None and not isinstance(args, str):
+            args = json.dumps(args, ensure_ascii=False, default=str)
+        total += len(args or "")
+    return total
+
+
+def _cap_tool_calls(tool_calls: Any, max_len: int) -> tuple[Any, bool]:
+    """Bound each call's ``function.arguments`` (a write_file body or skill create rides in
+    there whole); ``(calls, capped)``. Ids and names survive so the call still pairs with its
+    tool result row."""
+    if not isinstance(tool_calls, list):
+        return tool_calls, False
+    out, capped = [], False
+    for call in tool_calls:
+        fn = call.get("function") if isinstance(call, dict) else None
+        args = fn.get("arguments") if isinstance(fn, dict) else None
+        if args is not None and not isinstance(args, str):
+            args = json.dumps(args, ensure_ascii=False, default=str)
+        if isinstance(args, str) and len(args) > max_len:
+            call = {**call, "function": {**fn, "arguments": args[:max_len] + "…"}}
+            capped = True
+        out.append(call)
+    return (out, True) if capped else (tool_calls, False)
+
+
 def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None,
                    max_content_len: Optional[int] = None) -> Dict[str, Any]:
     """Slim a message row; keeps ``content`` even when empty (tool-call-only turns)."""
@@ -248,7 +307,124 @@ def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None,
     if max_content_len and content and len(content) > max_content_len:
         entry.update(content=content[:max_content_len] + "…", content_truncated=True,
                      original_content_chars=len(content))
+    if max_content_len and entry.get("tool_calls"):
+        capped, was_capped = _cap_tool_calls(entry["tool_calls"], max_content_len)
+        if was_capped:
+            entry.update(tool_calls=capped, tool_calls_truncated=True,
+                         original_arguments_chars=_tool_calls_chars(m.get("tool_calls")))
     return {k: v for k, v in entry.items() if v is not None or k == "content"}
+
+
+def _tool_call_stub(call: Any) -> Dict[str, Any]:
+    """A call reduced to id/type/function name — enough to pair it with its tool result row."""
+    if not isinstance(call, dict):
+        return {}
+    stub = {k: call[k] for k in ("id", "type") if k in call}
+    if isinstance(call.get("function"), dict):
+        stub["function"] = {"name": call["function"].get("name")}
+    return stub
+
+
+def _message_cost(m: Dict[str, Any]) -> int:
+    return len(m.get("content") or "") + (_tool_calls_chars(m["tool_calls"]) if m.get("tool_calls") else 0)
+
+
+def _fit_to_budget(anchors: List[Dict[str, Any]], context: List[Dict[str, Any]],
+                   budget: int = _RESPONSE_CONTENT_BUDGET) -> Optional[Dict[str, Any]]:
+    """Spend *budget* in place over already-shaped messages, in three passes: every anchor's
+    content (each guaranteed ``_ANCHOR_EVIDENCE_CHARS`` or its whole content, whichever is
+    smaller, before the next one is paid), then anchors' tool-call arguments, then *context*
+    in priority order. A message that does not fit loses its tool-call arguments first
+    (names/ids stay), then is cut to the remaining budget, or stubbed (empty content,
+    ``content_omitted``) under the floor. Returns the ``budget`` block for the response, or
+    None when nothing was cut by any cap."""
+    remaining, stubbed = budget, 0
+    for i, m in enumerate(anchors):
+        content = m.get("content") or ""
+        allowed = max(_ANCHOR_EVIDENCE_CHARS, remaining - (len(anchors) - i - 1) * _ANCHOR_EVIDENCE_CHARS)
+        if len(content) > allowed:
+            m.update(content=content[:allowed - 1] + "…", content_truncated=True,
+                     original_content_chars=m.get("original_content_chars") or len(content))
+        remaining = max(remaining - len(m.get("content") or ""), 0)
+    for m in anchors:
+        if not m.get("tool_calls"):
+            continue
+        if (cost := _tool_calls_chars(m["tool_calls"])) <= remaining:
+            remaining -= cost
+            continue
+        m.setdefault("original_arguments_chars", cost)
+        m.update(tool_calls=[_tool_call_stub(c) for c in m["tool_calls"]], tool_calls_truncated=True)
+    for m in context:
+        if (cost := _message_cost(m)) <= remaining:
+            remaining -= cost
+            continue
+        if m.get("tool_calls"):
+            m.setdefault("original_arguments_chars", _tool_calls_chars(m["tool_calls"]))
+            m.update(tool_calls=[_tool_call_stub(c) for c in m["tool_calls"]], tool_calls_truncated=True)
+            if (cost := _message_cost(m)) <= remaining:
+                remaining -= cost
+                continue
+        content = m.get("content") or ""
+        original = m.get("original_content_chars") or len(content)
+        room = remaining - (cost - len(content)) - 1  # chars left for content (+ ellipsis) after the kept fields
+        if room >= _BUDGET_CONTENT_FLOOR and content:
+            m.update(content=content[:room] + "…", content_truncated=True, original_content_chars=original)
+        else:
+            m.update(content="", content_omitted=True, original_content_chars=original)
+            m.pop("content_truncated", None)
+            stubbed += 1
+        remaining = max(remaining - _message_cost(m), 0)
+    # Count what the per-message caps cut too: the recovery route matters whenever anything is
+    # missing, not only when the whole-response budget was the reason.
+    cut = sum(1 for m in anchors + context if m.get("content_truncated") or m.get("tool_calls_truncated"))
+    if not cut and not stubbed:
+        return None
+    return {"content_budget_chars": budget, "anchor_evidence_chars": _ANCHOR_EVIDENCE_CHARS,
+            "messages_truncated": cut, "messages_omitted": stubbed, "recover": _BUDGET_RECOVERY}
+
+
+def _outward(messages: List[Dict[str, Any]], anchor_id: Optional[int]) -> List[Dict[str, Any]]:
+    """*messages* re-ordered by distance from the anchor (anchor first, then alternating
+    after/before), so a budget spends itself on the centre of a window first."""
+    idx = next((i for i, m in enumerate(messages) if m.get("id") == anchor_id), len(messages) // 2)
+    order, before, after = [], messages[:idx][::-1], messages[idx:]
+    for i in range(max(len(before), len(after))):
+        order.extend(x[i] for x in (after, before) if i < len(x))
+    return order
+
+
+def _split_anchor(outward: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """``(anchors, context)`` for an outward-ordered window: the centre, then the rest."""
+    return outward[:1], outward[1:]
+
+
+def _ends_in(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """*messages* re-ordered first/last alternating inward: a read keeps the goal and the
+    resolution before the middle."""
+    order: List[Dict[str, Any]] = []
+    for i in range((len(messages) + 1) // 2):
+        order.append(messages[i])
+        if i != len(messages) - 1 - i:
+            order.append(messages[-1 - i])
+    return order
+
+
+def _discovery_priority(results: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """``(anchors, context)``: every result's anchor in rank order; then each result's window
+    outward from its anchor and its bookends — a lower-ranked hit keeps its match before a
+    higher-ranked one keeps its context."""
+    anchors, rest = [], []
+    for r in results:
+        window = _outward(r.get("messages") or [], r.get("match_message_id"))
+        anchors.extend(window[:1])
+        rest.extend(window[1:] + (r.get("bookend_start") or []) + (r.get("bookend_end") or []))
+    return anchors, rest
+
+
+def _budget_fields(anchors: List[Dict[str, Any]], context: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """``{"budget": ...}`` for the response when anything was cut, else ``{}``."""
+    block = _fit_to_budget(anchors, context)
+    return {"budget": block} if block else {}
 
 
 def _session_link(session_id: str, profile: str = None) -> str:
@@ -428,7 +604,8 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
         "verbatim inline mid-sentence (it renders as a titled link) — never "
         "as markdown, in backticks, on its own line, or next to the "
         "title/id/date. To read more around a compact result, scroll: "
-        "session_search(session_id=..., around_message_id=match_message_id)."))
+        "session_search(session_id=..., around_message_id=match_message_id)."),
+        **_budget_fields(*_discovery_priority(results)))
 
 
 def _resolve_profile_db(profile: str):
@@ -455,11 +632,13 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_prof
         return err
     shaped = [_shape_message(m, max_content_len=_READ_MAX_CONTENT) for m in rows]
     total, truncated = len(shaped), len(shaped) > head + tail
+    shown = shaped[:head] + shaped[-tail:] if truncated else shaped
     return _ok(mode="read", session_id=session_id, link=_session_link(session_id, link_profile),
                session_meta=_session_meta_block(meta), message_count=total, truncated=truncated,
-               messages=shaped[:head] + shaped[-tail:] if truncated else shaped,
+               messages=shown,
                **({"message": (f"Session has {total} messages; showing first {head} + last {tail}. "
-                               "Pass around_message_id (any id above) to scroll the middle.")} if truncated else {}))
+                               "Pass around_message_id (any id above) to scroll the middle.")} if truncated else {}),
+               **_budget_fields([], _ends_in(shown)))
 
 
 def _read_scoped(db, sid: str, profile: Optional[str]) -> str:
@@ -563,15 +742,17 @@ def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
             session_meta = _get_session_meta(db, owning) or session_meta
     if not messages:
         return tool_error(f"around_message_id {around_message_id} not in session_id {session_id}", success=False)
+    shaped = [_shape_message(m, anchor_id=around_message_id, max_content_len=_SCROLL_MAX_CONTENT) for m in messages]
     return _ok(
         mode="scroll", session_id=session_id, around_message_id=around_message_id,
         session_meta=_session_meta_block(session_meta), window=window,
-        messages=[_shape_message(m, anchor_id=around_message_id) for m in messages],
+        messages=shaped,
         messages_before=view.get("messages_before", 0), messages_after=view.get("messages_after", 0),
         hint=("Scroll forward: re-call with around_message_id = the LAST message's "
               "id; backward: the FIRST message's id (the boundary message repeats "
               "as an orientation marker). messages_before/messages_after < window "
-              "means you've hit that end of the session."), **extra)
+              "means you've hit that end of the session."), **extra,
+        **_budget_fields(*_split_anchor(_outward(shaped, around_message_id))))
 
 
 def _dispatch(query, role_filter, limit, db, current_session_id, session_id,

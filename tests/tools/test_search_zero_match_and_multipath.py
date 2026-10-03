@@ -53,6 +53,51 @@ class TestZeroMatchProbe:
         # Same class as the casing probe: the path must be in the hint.
         assert "conf.cfg" in r.get("warning", "")
 
+    def test_hidden_only_match_is_structurally_distinct_from_absence(self, proj):
+        # The prose warning is the only signal that a zero is "excluded by default"
+        # rather than "nothing exists"; both answer total_count == 0. A consumer that
+        # does not parse English needs the distinction as data, on the same schema.
+        d = proj / "proj"
+        (d / ".secretdir").mkdir()
+        (d / ".secretdir" / "conf.cfg").write_text("HIDDEN_ONLY_TOKEN = true\n")
+        hidden = json.loads(search_tool("HIDDEN_ONLY_TOKEN", path=str(d), task_id="t-zm-structured"))
+        absent = json.loads(search_tool("zzz_totally_absent_zzz", path=str(d), task_id="t-zm-structured"))
+        assert hidden["total_count"] == absent["total_count"] == 0
+        assert "zero_match" not in absent
+        probe = hidden["zero_match"]
+        assert probe["reason"] == "hidden_or_gitignored"
+        assert probe["match_count"] == probe["file_count"] == 1
+        assert probe["paths"] and probe["paths"][0].endswith("conf.cfg")
+        assert probe["paths"][0] in hidden["warning"]
+
+    def test_probe_paths_honour_the_read_block_denylist(self, proj):
+        # The probe runs rg --hidden --no-ignore, so a project .env is a natural only-hit.
+        # Structured paths and the prose must drop it under the same rule that filters
+        # matches/files/counts (credential stores, .env), without naming it or keeping the
+        # pre-filter counts.
+        d = proj / "proj"
+        (d / ".env").write_text("DENYLIST_PROBE_TOKEN=sk-live-should-never-leak\n")
+        (d / ".notes").mkdir()
+        (d / ".notes" / "todo.cfg").write_text("DENYLIST_PROBE_TOKEN mentioned here\n")
+        mixed = json.loads(search_tool("DENYLIST_PROBE_TOKEN", path=str(d), task_id="t-zm-deny"))
+        raw = json.dumps(mixed)
+        assert mixed["total_count"] == 0
+        assert ".env" not in raw and "should-never-leak" not in raw
+        probe = mixed["zero_match"]
+        assert probe["paths"] == [str(d / ".notes" / "todo.cfg")]
+        assert probe["paths_omitted"] == 1 and probe["file_count"] == 1
+        assert probe["match_count_is_lower_bound"] is True
+        assert "todo.cfg" in mixed["warning"] and "1 hidden or gitignored file(s)" in mixed["warning"]
+        assert mixed["_omitted"].startswith("1 result(s) omitted")
+
+        (d / ".notes" / "todo.cfg").unlink()
+        only_env = json.loads(search_tool("DENYLIST_PROBE_TOKEN", path=str(d), task_id="t-zm-deny-only"))
+        raw = json.dumps(only_env)
+        assert only_env["total_count"] == 0
+        assert ".env" not in raw and "should-never-leak" not in raw
+        assert "zero_match" not in only_env and "warning" not in only_env
+        assert only_env["_omitted"].startswith("1 result(s) omitted")
+
     def test_hidden_probe_prunes_dependency_trees_and_keeps_local_ignored(self, proj):
         d = proj / "proj"
         dependency = d / "node_modules" / "package" / ".hidden"

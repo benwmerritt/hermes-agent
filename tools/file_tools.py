@@ -252,6 +252,25 @@ def _filter_read_blocked_search_results(result, task_id: str = "default") -> int
         result.files = [f for f in result.files if _allowed(f)]
     if getattr(result, "counts", None):
         result.counts = {f: c for f, c in result.counts.items() if _allowed(f)}
+    probe = getattr(result, "zero_match", None)
+    if isinstance(probe, dict) and probe.get("paths"):
+        # The zero-match probe runs rg with --hidden --no-ignore, so a project .env or a
+        # credential store can be its only hit. Same rule as the matches above, applied to
+        # the structured paths AND the prose that names them; the counts shrink to what is
+        # still shown (``match_count`` becomes a lower bound: per-file counts are unknown).
+        from tools.file_operations_search import zero_match_hint
+        old_hint = zero_match_hint(probe)
+        kept = [pth for pth in probe["paths"] if _allowed(pth)]
+        if dropped := len(probe["paths"]) - len(kept):
+            probe.update(paths=kept, paths_omitted=dropped,
+                         file_count=max(int(probe.get("file_count") or 0) - dropped, len(kept)),
+                         match_count=max(int(probe.get("match_count") or 0) - dropped, len(kept)),
+                         match_count_is_lower_bound=True)
+            new_hint = zero_match_hint(probe) if kept else ""
+            if result.warning:
+                result.warning = result.warning.replace(old_hint, new_hint).strip() or None
+            if not kept:
+                result.zero_match = None
     return omitted
 
 

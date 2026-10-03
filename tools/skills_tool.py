@@ -196,7 +196,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
         # s["enabled"]/s["usage"]); handing out cached objects would poison the cache.
         return [dict(s) for s in cached[2]]
     skills = []
-    seen_names: set = set()
+    seen_names: Dict[str, Tuple[Dict[str, Any], Path]] = {}  # name -> (listed entry, its SKILL.md)
     for scan_dir in dirs_to_scan:  # project dirs go through the quarantine chokepoint
         _iter = iter_project_skill_files if scan_dir in project_dirs else lambda d: iter_skill_index_files(d, "SKILL.md")
         for skill_md in _iter(scan_dir):
@@ -207,15 +207,27 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter) or not skill_matches_apps(frontmatter):
                     continue
                 name = frontmatter.get("name", skill_md.parent.name)[:MAX_NAME_LENGTH]
-                if name in seen_names or name in disabled:
+                if name in disabled:
+                    continue
+                if name in seen_names:
+                    # First wins the listing; a DIFFERENT skill behind the same name would make the
+                    # bare name refuse in skill_view, so both sides are listed by loadable path.
+                    first, first_md = seen_names[name]
+                    if not _provably_same_skill([(None, first_md), (None, skill_md)]):
+                        handles = _collision_handles([(None, first_md), (None, skill_md)], project_dirs, dirs_to_scan)
+                        first.setdefault("load_as", [])
+                        first["load_as"].extend(h for h in handles["load_as"] if h not in first["load_as"])
+                        if handles.get("rename_required"):
+                            first["rename_required"] = True
                     continue
                 description = frontmatter.get("description", "")
                 if not description:  # first non-heading body line (a null value stays null)
                     description = next((ln for ln in map(str.strip, body.strip().split("\n"))
                                         if ln and not ln.startswith("#")), description)
-                seen_names.add(name)
-                skills.append({"name": name, "description": _truncate_description(description),
-                               "category": _get_category_from_path(skill_md)})
+                entry = {"name": name, "description": _truncate_description(description),
+                         "category": _get_category_from_path(skill_md)}
+                seen_names[name] = (entry, skill_md)
+                skills.append(entry)
             except (UnicodeDecodeError, PermissionError) as e:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)
             except Exception as e:
@@ -256,7 +268,9 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         return _json({
             "success": True, "skills": all_skills, "categories": categories,
             "count": len(all_skills),
-            "hint": "Use skill_view(name) to see full content, tags, and linked files"})
+            "hint": "Use skill_view(name) to see full content, tags, and linked files; an entry "
+                    "with load_as shares its name with another skill — pass one of those paths; "
+                    "rename_required means a colliding skill has no path that singles it out."})
     except Exception as e:
         return tool_error(str(e), success=False)
 
@@ -475,6 +489,17 @@ def _skill_readiness(frontmatter: Dict[str, Any], skill_name: str) -> Tuple[dict
     return fields, extras
 
 
+def _skill_handle(skill_md: Path, root: Optional[Path]) -> Optional[str]:
+    """The relative path ``skill_view`` loads *skill_md* by (``category/name`` for a directory
+    skill, ``category/name`` sans suffix for a flat ``name.md``); None when no root owns it."""
+    if root is None:
+        return None
+    rel = skill_md.parent if skill_md.name == "SKILL.md" else skill_md.with_suffix("")
+    with suppress(ValueError):
+        return rel.relative_to(root).as_posix()
+    return None
+
+
 def _owning_search_dir(skill_md: Path, all_dirs) -> Optional[Path]:
     """Most specific search dir containing *skill_md*, compared lexically: a symlinked entry
     belongs to the root that exposes it, not to the root its target lives in."""
@@ -500,14 +525,9 @@ def _provably_same_skill(candidates) -> bool:
         return False
 
 
-def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: list, all_dirs):
-    """Unique on-disk skill for *name*: collision refusal, project-tier precedence, same-root
-    precedence, quarantine gate, not-found listing. ``(error_json, skill_dir, skill_md)``;
-    skill_md set iff no error."""
-    if not all_dirs:
-        return _fail(
-            "Skills directory does not exist yet. It will be created on first install."), None, None
-    candidates = _collect_skill_candidates(name, local_category_name, all_dirs)
+def _narrow_candidates(name: str, candidates, project_dirs: list, all_dirs):
+    """The resolver's narrowing rules on *candidates*: project-tier precedence, then the
+    same-root collapse of provably-identical copies. Anything still >1 is a real collision."""
     if len(candidates) > 1 and project_dirs:
         # A project skill intentionally overrides a same-named local/external skill;
         # ambiguity WITHIN the project tier (two different skills) still refuses.
@@ -526,15 +546,61 @@ def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: l
                             name, len(candidates), ranked[0][1],
                             "; ".join(str(smd) for _sd, smd in ranked[1:]))
                 candidates = [ranked[0]]
+    return candidates
+
+
+def _verified_handle(skill_md: Path, project_dirs: list, all_dirs) -> Optional[str]:
+    """The relative path that makes ``skill_view`` resolve to *skill_md* and nothing else, or
+    None. ``deploy/SKILL.md`` under two roots both yield ``deploy``, and a top-level ``deploy``
+    collides with ``cat/deploy`` through the recursive by-name lookup — a handle is only
+    advertised after it has been run through the resolver's own rules."""
+    handle = _skill_handle(skill_md, _owning_search_dir(skill_md, all_dirs))
+    if not handle:
+        return None
+    resolved = _narrow_candidates(handle, _collect_skill_candidates(handle, None, all_dirs), project_dirs, all_dirs)
+    if len(resolved) != 1:
+        return None
+    with suppress(OSError):
+        return handle if os.path.realpath(resolved[0][1]) == os.path.realpath(skill_md) else None
+    return None
+
+
+def _collision_handles(candidates, project_dirs: list, all_dirs) -> Dict[str, Any]:
+    """``load_as`` (verified handles) and, when some candidate has none, ``rename_required``
+    (its paths) — the only honest recovery for that one is a rename. Metadata only: the handles
+    are inputs the existing ``name`` lookup already accepts; this adds no category/source
+    selection parameter and leaves the bare-name refusal in place."""
+    load_as, unresolvable = [], []
+    for _sd, smd in candidates:
+        if handle := _verified_handle(smd, project_dirs, all_dirs):
+            load_as.append(handle)
+        else:
+            unresolvable.append(str(smd))
+    return {"load_as": load_as, **({"rename_required": unresolvable} if unresolvable else {})}
+
+
+def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: list, all_dirs):
+    """Unique on-disk skill for *name*: collision refusal, project-tier precedence, same-root
+    precedence, quarantine gate, not-found listing. ``(error_json, skill_dir, skill_md)``;
+    skill_md set iff no error."""
+    if not all_dirs:
+        return _fail(
+            "Skills directory does not exist yet. It will be created on first install."), None, None
+    candidates = _narrow_candidates(
+        name, _collect_skill_candidates(name, local_category_name, all_dirs), project_dirs, all_dirs)
     if len(candidates) > 1:
         paths = [str(smd) for _, smd in candidates]
         logger.warning("Skill name collision for '%s': %d candidates — %s", name, len(candidates), "; ".join(paths))
+        handles = _collision_handles(candidates, project_dirs, all_dirs)
         return _fail(
             f"Ambiguous skill name '{name}': {len(candidates)} skills match across your local skills dir "
             "and external_dirs. Refusing to guess — load one explicitly by its categorized path.",
-            matches=paths,
-            hint="Pass the full relative path instead of the bare name (e.g., 'category/skill-name'), "
-            "or rename one of the colliding skills so each name is unique."), None, None
+            matches=paths, **handles,
+            hint=("Pass one of load_as instead of the bare name" if handles["load_as"] else
+                  "No relative path selects exactly one of these")
+            + ("; the skills under rename_required have no path that singles them out — rename one "
+               "so each name is unique." if handles.get("rename_required") else
+               ", or rename one of the colliding skills so each name is unique.")), None, None
     skill_dir, skill_md = candidates[0] if candidates else (None, None)
     # Quarantine gate: a project-tier skill with a dangerous scan verdict must not
     # load even by explicit name (same chokepoint the index and skills_list use).
