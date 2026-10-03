@@ -587,30 +587,37 @@ class SearchMixin:
                 globs.extend(("--glob", self._escape_shell_arg(f"!{prefix}{dirname}/**")))
         return " ".join(globs)
 
-    # (rg flags, message template) probes for a 0-match content search, in order.
-    # The fixed-string probe only runs when the pattern has regex metacharacters.
+    # (rg flags, reason key, message template) probes for a 0-match content search, in
+    # order. The fixed-string probe only runs when the pattern has regex metacharacters.
     _ZERO_MATCH_PROBES = (
-        ("-i", "0 exact matches, but {total} case-insensitive match(es) in {n} file(s): "
-               "{paths} — the pattern's casing may be wrong."),
+        ("-i", "case_mismatch",
+         "0 exact matches, but {total} case-insensitive match(es) in {n} file(s): "
+         "{paths} — the pattern's casing may be wrong."),
         # rg skips dotdirs and .gitignore'd files by default; say so instead of a bare zero.
-        ("--hidden --no-ignore", "0 matches in visible files, but {total} match(es) in {n} "
-                                 "hidden or gitignored file(s): {paths} — these are excluded by default."),
-        ("-F", "0 regex matches, but {total} literal match(es) in {n} file(s): {paths} — the "
-               "pattern contains regex metacharacters that likely need escaping "
-               "(or pass a simpler substring)."),
+        ("--hidden --no-ignore", "hidden_or_gitignored",
+         "0 matches in visible files, but {total} match(es) in {n} "
+         "hidden or gitignored file(s): {paths} — these are excluded by default."),
+        ("-F", "regex_metacharacters",
+         "0 regex matches, but {total} literal match(es) in {n} file(s): {paths} — the "
+         "pattern contains regex metacharacters that likely need escaping "
+         "(or pass a simpler substring)."),
     )
 
-    def _zero_match_probe(self, pattern: str, path: str, file_glob: Optional[str]) -> Optional[str]:
+    def _zero_match_probe(self, pattern: str, path: str, file_glob: Optional[str],
+                          findings: Optional[dict] = None) -> Optional[str]:
         """Steering hint for a 0-match content search, or None: a bare zero gives the
         model nothing to act on, so run cheap count-only rg probes (case-insensitive,
-        hidden/ignored, fixed-string) and report the first that hits."""
+        hidden/ignored, fixed-string) and report the first that hits. *findings*, when
+        passed, receives the same answer structured (``reason``, ``match_count``,
+        ``file_count``, ``paths``) so a consumer can tell "excluded by default" from
+        "absent" without parsing the prose."""
         rg_executable = self._resolve_command('rg')
         if not rg_executable:
             return None
         rg = self._quote_executable(rg_executable)
         has_meta = bool(re.search(r"[.\[\](){}?*+^$\\|]", pattern))
         glob_expr = f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else ""
-        for flags, template in self._ZERO_MATCH_PROBES:
+        for flags, reason, template in self._ZERO_MATCH_PROBES:
             if flags == "-F" and not has_meta:
                 continue
             # The hidden/ignored probe keeps --no-ignore so project-local ignored
@@ -631,6 +638,8 @@ class SearchMixin:
             if total > 0:
                 extra = len(per_file) - 5
                 paths = ", ".join(per_file[:5]) + (f" (+{extra} more)" if extra > 0 else "")
+                if findings is not None:
+                    findings.update(reason=reason, match_count=total, file_count=len(per_file), paths=per_file[:5])
                 return template.format(total=total, n=len(per_file), paths=paths)
         return None
 
@@ -989,12 +998,15 @@ class SearchMixin:
                       "Install ripgrep: https://github.com/BurntSushi/ripgrep#installation")
         if (not result.error and result.total_count == 0
                 and not result.matches and not result.files and not result.counts):
+            findings: dict = {}
             try:
-                hint = self._zero_match_probe(pattern, path, file_glob)
+                hint = self._zero_match_probe(pattern, path, file_glob, findings=findings)
             except Exception:
                 hint = None
             if hint:
                 result.warning = hint if not result.warning else f"{result.warning} {hint}"
+                if findings:
+                    result.zero_match = findings
         # rg auto-enables --multiline for \n patterns, so the line-oriented
         # explanation only applies to the grep fallback.
         if used_rg:
