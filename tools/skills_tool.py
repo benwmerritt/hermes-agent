@@ -567,7 +567,9 @@ def _verified_handle(skill_md: Path, project_dirs: list, all_dirs) -> Optional[s
 
 def _collision_handles(candidates, project_dirs: list, all_dirs) -> Dict[str, Any]:
     """``load_as`` (verified handles) and, when some candidate has none, ``rename_required``
-    (its paths) — the only honest recovery for that one is a rename."""
+    (its paths) — the only honest recovery for that one is a rename. Metadata only: the handles
+    are inputs the existing ``name`` lookup already accepts; this adds no category/source
+    selection parameter and leaves the bare-name refusal in place."""
     load_as, unresolvable = [], []
     for _sd, smd in candidates:
         if handle := _verified_handle(smd, project_dirs, all_dirs):

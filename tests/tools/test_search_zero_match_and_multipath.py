@@ -70,6 +70,34 @@ class TestZeroMatchProbe:
         assert probe["paths"] and probe["paths"][0].endswith("conf.cfg")
         assert probe["paths"][0] in hidden["warning"]
 
+    def test_probe_paths_honour_the_read_block_denylist(self, proj):
+        # The probe runs rg --hidden --no-ignore, so a project .env is a natural only-hit.
+        # Structured paths and the prose must drop it under the same rule that filters
+        # matches/files/counts (credential stores, .env), without naming it or keeping the
+        # pre-filter counts.
+        d = proj / "proj"
+        (d / ".env").write_text("DENYLIST_PROBE_TOKEN=sk-live-should-never-leak\n")
+        (d / ".notes").mkdir()
+        (d / ".notes" / "todo.cfg").write_text("DENYLIST_PROBE_TOKEN mentioned here\n")
+        mixed = json.loads(search_tool("DENYLIST_PROBE_TOKEN", path=str(d), task_id="t-zm-deny"))
+        raw = json.dumps(mixed)
+        assert mixed["total_count"] == 0
+        assert ".env" not in raw and "should-never-leak" not in raw
+        probe = mixed["zero_match"]
+        assert probe["paths"] == [str(d / ".notes" / "todo.cfg")]
+        assert probe["paths_omitted"] == 1 and probe["file_count"] == 1
+        assert probe["match_count_is_lower_bound"] is True
+        assert "todo.cfg" in mixed["warning"] and "1 hidden or gitignored file(s)" in mixed["warning"]
+        assert mixed["_omitted"].startswith("1 result(s) omitted")
+
+        (d / ".notes" / "todo.cfg").unlink()
+        only_env = json.loads(search_tool("DENYLIST_PROBE_TOKEN", path=str(d), task_id="t-zm-deny-only"))
+        raw = json.dumps(only_env)
+        assert only_env["total_count"] == 0
+        assert ".env" not in raw and "should-never-leak" not in raw
+        assert "zero_match" not in only_env and "warning" not in only_env
+        assert only_env["_omitted"].startswith("1 result(s) omitted")
+
     def test_hidden_probe_prunes_dependency_trees_and_keeps_local_ignored(self, proj):
         d = proj / "proj"
         dependency = d / "node_modules" / "package" / ".hidden"
