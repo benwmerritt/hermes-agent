@@ -9,7 +9,9 @@ Four calling shapes:
 All run zero LLM calls.
 """
 import json
+import os
 import time
+from pathlib import Path
 from datetime import datetime, timezone
 
 import pytest
@@ -17,6 +19,7 @@ import pytest
 from hermes_state import SessionDB
 from tools.session_search_tool import (
     _format_timestamp,
+    _ANCHOR_EVIDENCE_CHARS,
     _READ_MAX_CONTENT,
     _RESPONSE_CONTENT_BUDGET,
     _is_compacted_message,
@@ -292,6 +295,36 @@ class TestDiscoveryShape:
         assert result["budget"]["messages_omitted"] == len(omitted)
         assert "around_message_id" in result["budget"]["recover"]
 
+    def test_every_anchor_keeps_evidence_before_arguments_and_context(self, db):
+        # Ten hits whose matched message carries 4K of text AND 4K of tool-call arguments:
+        # charged whole in rank order they exhaust the budget before the last anchors get any
+        # content. Evidence for every anchor is reserved first; arguments and context come after.
+        text = "modpack " * 500  # ~4K
+        args = json.dumps({"path": "notes.md", "content": "n" * 4000})
+        for i in range(10):
+            sid = f"s_anchor_{i}"
+            db.create_session(sid, source="cli")
+            db.append_message(sid, role="user", content=f"[{sid}] please write the notes " + "filler " * 300)
+            db.append_message(sid, role="assistant", content=f"[{sid}] {text}", tool_calls=[
+                {"id": f"call_{i}", "type": "function", "function": {"name": "write_file", "arguments": args}}])
+            db.append_message(sid, role="tool", content="written " + "ok " * 600, tool_name="write_file", tool_call_id=f"call_{i}")
+            db.append_message(sid, role="assistant", content=f"[{sid}] done " + "filler " * 300)
+        db._conn.commit()
+        result = json.loads(session_search(query="modpack", detail="full", limit=10, db=db))
+        assert result["success"] is True and result["count"] == 10
+        hydrated = [m for r in result["results"] for k in ("bookend_start", "messages", "bookend_end") for m in r[k]]
+        spent = sum(len(m.get("content") or "") + sum(len(c["function"].get("arguments") or "") for c in m.get("tool_calls") or [])
+                    for m in hydrated)
+        assert spent <= _RESPONSE_CONTENT_BUDGET
+        for hit in result["results"]:
+            anchor = next(m for m in hit["messages"] if m["id"] == hit["match_message_id"])
+            assert not anchor.get("content_omitted")
+            assert len(anchor["content"]) >= _ANCHOR_EVIDENCE_CHARS - 1
+            assert anchor["content"].startswith(f"[{hit['session_id']}] modpack")
+            assert anchor["tool_calls"][0]["id"] == f"call_{hit['session_id'].rsplit('_', 1)[1]}"
+            assert anchor["tool_calls"][0]["function"]["name"] == "write_file"
+        assert result["budget"]["messages_truncated"] >= 10
+
 
 class TestDiscoverySort:
     def test_sort_newest_orders_by_recency(self, db):
@@ -504,7 +537,7 @@ class TestReadShape:
         assert len(raw) < 3 * _READ_MAX_CONTENT + 2_000
         turn = next(m for m in result["messages"] if m.get("tool_calls"))
         assert turn["tool_calls_truncated"] is True
-        assert turn["original_tool_calls_chars"] > len(body)
+        assert turn["original_arguments_chars"] >= len(body)
         assert turn["tool_calls"][0]["id"] == "call_1"
         assert turn["tool_calls"][0]["function"]["name"] == "skill_manage"
 
@@ -527,6 +560,49 @@ class TestReadShape:
         budget = result["budget"]
         assert budget["messages_omitted"] == len(omitted)
         assert "around_message_id" in budget["recover"] and "hermes sessions export" in budget["recover"]
+
+
+class TestRecoveryRoute:
+    """The route the ``budget.recover`` text names must actually return what was cut — including
+    a compaction-archived oversized message, which scroll (live rows, capped) and the default
+    JSONL export (``include_compacted=False``) both miss."""
+
+    def test_markdown_export_recovers_a_compacted_oversized_message(self, tmp_path):
+        import subprocess
+        import sys
+        from hermes_state import _default_db_path
+        db_path = _default_db_path()
+        assert str(db_path).startswith(os.environ["HERMES_HOME"])  # isolated home, never the real one
+        db = SessionDB(db_path)
+        db.create_session("s_arch", source="cli")
+        db.append_message("s_arch", role="user", content="design the ranking for the pack")
+        body = "tier list body modpack " + "detail " * 1300 + "end"  # ~9K, past every per-message cap
+        mid = db.append_message("s_arch", role="assistant", content=body)
+        db.archive_and_compact("s_arch", [
+            {"role": "user", "content": "Summary: ranking discussed"},
+            {"role": "assistant", "content": "Acknowledged the ranking"}])
+        found = json.loads(session_search(query="tier list modpack", db=db, current_session_id="s_arch"))
+        hit = next(r for r in found["results"] if r["match_message_id"] == mid)
+        anchor = next(m for m in hit["messages"] if m["id"] == mid)
+        assert anchor["content_truncated"] is True and anchor["original_content_chars"] == len(body)
+        recover = found["budget"]["recover"]
+        assert "--format md" in recover and "--session-id" in recover and "-p <profile>" in recover
+        db.close()
+
+        repo = Path(__file__).resolve().parents[2]
+        out_dir = tmp_path / "export"
+        env = {**os.environ, "HERMES_HOME": os.environ["HERMES_HOME"]}
+        md = subprocess.run([sys.executable, "-m", "hermes_cli.main", "sessions", "export", str(out_dir),
+                             "--format", "md", "--session-id", "s_arch"],
+                            capture_output=True, text=True, cwd=repo, env=env, timeout=120)
+        assert md.returncode == 0, md.stdout + md.stderr
+        exported = "".join(p.read_text() for p in out_dir.glob("*.md"))
+        assert body in exported  # the archived row, whole
+        jsonl = subprocess.run([sys.executable, "-m", "hermes_cli.main", "sessions", "export",
+                                str(tmp_path / "out.jsonl"), "--session-id", "s_arch"],
+                               capture_output=True, text=True, cwd=repo, env=env, timeout=120)
+        assert jsonl.returncode == 0, jsonl.stdout + jsonl.stderr
+        assert body not in (tmp_path / "out.jsonl").read_text()  # why the hint names md, not jsonl
     def test_title_match_entry_caps_content_like_fts_hits(self, db):
         """A session-title match is a discovery entry: bookends 1200, window 4000, same as FTS hits."""
         db.create_session("s_titled", source="cli")

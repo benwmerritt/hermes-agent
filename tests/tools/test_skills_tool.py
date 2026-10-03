@@ -934,7 +934,55 @@ class TestSkillViewCollisionDetection:
         assert loaded["alpha/deploy"]["content"] != loaded["beta/deploy"]["content"]
         by_name = {s["name"]: s for s in listing["skills"]}
         assert sorted(by_name["deploy"]["load_as"]) == sorted(refused["load_as"])
+        assert "rename_required" not in refused and "rename_required" not in by_name["deploy"]
         assert "load_as" not in by_name["solo"]
+
+    def test_same_relative_path_across_roots_is_not_advertised_as_a_handle(self, tmp_path):
+        """``deploy/SKILL.md`` under the local dir AND an external dir both reduce to the
+        handle ``deploy`` — which is the collision. Nothing must be advertised as loadable;
+        the only honest recovery is a rename, and the catalogue says so too."""
+        local_dir, external_dir = tmp_path / "local", tmp_path / "external"
+        local_dir.mkdir(); external_dir.mkdir()
+        _make_skill(local_dir, "deploy", body="LOCAL BODY")
+        _make_skill(external_dir, "deploy", body="EXTERNAL BODY")
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            skills_tool_module._SKILLS_CACHE.clear()
+            listing = json.loads(skills_list())
+            refused = json.loads(skill_view("deploy"))
+
+        assert refused["success"] is False and len(refused["matches"]) == 2
+        assert refused["load_as"] == []
+        assert sorted(refused["rename_required"]) == sorted(refused["matches"])
+        assert "rename" in refused["hint"]
+        entry = next(s for s in listing["skills"] if s["name"] == "deploy")
+        assert entry["load_as"] == [] and entry["rename_required"] is True
+
+    def test_only_the_handle_that_singles_a_candidate_out_is_advertised(self, tmp_path):
+        """One root, three different skills answering to ``deploy``: a flat legacy
+        ``deploy.md``, a top-level ``deploy/`` and ``ops/deploy/``. The recursive lookup finds
+        all three for the bare name, so only ``ops/deploy`` is a handle that resolves to one
+        exact candidate; the other two are reported as needing a rename."""
+        local_dir = tmp_path / "local"
+        local_dir.mkdir()
+        (local_dir / "deploy.md").write_text("---\nname: deploy\ndescription: flat\n---\nFLAT BODY\n")
+        _make_skill(local_dir, "deploy", body="TOP BODY")
+        _make_skill(local_dir, "deploy", category="ops", body="OPS BODY")
+
+        p1, p2 = self._patch_dirs(local_dir, [])
+        with p1, p2:
+            skills_tool_module._SKILLS_CACHE.clear()
+            refused = json.loads(skill_view("deploy"))
+            loaded = {h: json.loads(skill_view(h)) for h in refused["load_as"]}
+            still_ambiguous = json.loads(skill_view("deploy"))
+
+        assert refused["success"] is False and len(refused["matches"]) == 3
+        assert refused["load_as"] == ["ops/deploy"]
+        assert loaded["ops/deploy"]["success"] is True and "OPS BODY" in loaded["ops/deploy"]["content"]
+        assert len(refused["rename_required"]) == 2
+        assert all(os.path.join("ops", "deploy") not in p for p in refused["rename_required"])
+        assert still_ambiguous["success"] is False
 
 
     def test_support_markdown_does_not_collide_with_real_skill(self, tmp_path):
