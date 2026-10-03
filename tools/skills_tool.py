@@ -196,7 +196,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
         # s["enabled"]/s["usage"]); handing out cached objects would poison the cache.
         return [dict(s) for s in cached[2]]
     skills = []
-    seen_names: set = set()
+    seen_names: Dict[str, Tuple[Dict[str, Any], Path]] = {}  # name -> (listed entry, its SKILL.md)
     for scan_dir in dirs_to_scan:  # project dirs go through the quarantine chokepoint
         _iter = iter_project_skill_files if scan_dir in project_dirs else lambda d: iter_skill_index_files(d, "SKILL.md")
         for skill_md in _iter(scan_dir):
@@ -207,15 +207,26 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter) or not skill_matches_apps(frontmatter):
                     continue
                 name = frontmatter.get("name", skill_md.parent.name)[:MAX_NAME_LENGTH]
-                if name in seen_names or name in disabled:
+                if name in disabled:
+                    continue
+                if name in seen_names:
+                    # First wins the listing; a DIFFERENT skill behind the same name would make the
+                    # bare name refuse in skill_view, so both sides are listed by loadable path.
+                    first, first_md = seen_names[name]
+                    if not _provably_same_skill([(None, first_md), (None, skill_md)]):
+                        handles = (_skill_handle(first_md, _owning_search_dir(first_md, dirs_to_scan)),
+                                   _skill_handle(skill_md, scan_dir))
+                        first.setdefault("load_as", [])
+                        first["load_as"].extend(h for h in handles if h and h not in first["load_as"])
                     continue
                 description = frontmatter.get("description", "")
                 if not description:  # first non-heading body line (a null value stays null)
                     description = next((ln for ln in map(str.strip, body.strip().split("\n"))
                                         if ln and not ln.startswith("#")), description)
-                seen_names.add(name)
-                skills.append({"name": name, "description": _truncate_description(description),
-                               "category": _get_category_from_path(skill_md)})
+                entry = {"name": name, "description": _truncate_description(description),
+                         "category": _get_category_from_path(skill_md)}
+                seen_names[name] = (entry, skill_md)
+                skills.append(entry)
             except (UnicodeDecodeError, PermissionError) as e:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)
             except Exception as e:
@@ -256,7 +267,8 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         return _json({
             "success": True, "skills": all_skills, "categories": categories,
             "count": len(all_skills),
-            "hint": "Use skill_view(name) to see full content, tags, and linked files"})
+            "hint": "Use skill_view(name) to see full content, tags, and linked files; an entry "
+                    "with load_as shares its name with another skill — pass one of those paths."})
     except Exception as e:
         return tool_error(str(e), success=False)
 
@@ -475,6 +487,17 @@ def _skill_readiness(frontmatter: Dict[str, Any], skill_name: str) -> Tuple[dict
     return fields, extras
 
 
+def _skill_handle(skill_md: Path, root: Optional[Path]) -> Optional[str]:
+    """The relative path ``skill_view`` loads *skill_md* by (``category/name`` for a directory
+    skill, ``category/name`` sans suffix for a flat ``name.md``); None when no root owns it."""
+    if root is None:
+        return None
+    rel = skill_md.parent if skill_md.name == "SKILL.md" else skill_md.with_suffix("")
+    with suppress(ValueError):
+        return rel.relative_to(root).as_posix()
+    return None
+
+
 def _owning_search_dir(skill_md: Path, all_dirs) -> Optional[Path]:
     """Most specific search dir containing *skill_md*, compared lexically: a symlinked entry
     belongs to the root that exposes it, not to the root its target lives in."""
@@ -529,12 +552,14 @@ def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: l
     if len(candidates) > 1:
         paths = [str(smd) for _, smd in candidates]
         logger.warning("Skill name collision for '%s': %d candidates — %s", name, len(candidates), "; ".join(paths))
+        # Absolute paths are refused by the lookup; hand over the relative form it accepts.
+        load_as = [h for _sd, smd in candidates if (h := _skill_handle(smd, _owning_search_dir(smd, all_dirs)))]
         return _fail(
             f"Ambiguous skill name '{name}': {len(candidates)} skills match across your local skills dir "
             "and external_dirs. Refusing to guess — load one explicitly by its categorized path.",
-            matches=paths,
-            hint="Pass the full relative path instead of the bare name (e.g., 'category/skill-name'), "
-            "or rename one of the colliding skills so each name is unique."), None, None
+            matches=paths, load_as=load_as,
+            hint="Pass the full relative path instead of the bare name (one of load_as, e.g. "
+            "'category/skill-name'), or rename one of the colliding skills so each name is unique."), None, None
     skill_dir, skill_md = candidates[0] if candidates else (None, None)
     # Quarantine gate: a project-tier skill with a dangerous scan verdict must not
     # load even by explicit name (same chokepoint the index and skills_list use).

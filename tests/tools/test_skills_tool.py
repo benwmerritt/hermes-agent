@@ -909,6 +909,33 @@ class TestSkillViewCollisionDetection:
         assert any("external" in p for p in result["matches"])
         assert "hint" in result
 
+    def test_collision_surfaces_loadable_relative_paths_and_still_refuses(self, tmp_path):
+        """The refusal's ``matches`` are absolute paths, which the lookup rejects, and the
+        catalogue listed only the first-seen skill — so the agent had no handle for the
+        other one. Both must name the ``category/name`` form skill_view accepts, while the
+        bare name keeps refusing two different bodies."""
+        local_dir = tmp_path / "local"
+        local_dir.mkdir()
+        _make_skill(local_dir, "deploy", category="alpha", body="ALPHA BODY")
+        _make_skill(local_dir, "deploy", category="beta", body="BETA BODY, different")
+        _make_skill(local_dir, "solo", category="gamma", body="unique")
+
+        p1, p2 = self._patch_dirs(local_dir, [])
+        with p1, p2:
+            skills_tool_module._SKILLS_CACHE.clear()
+            listing = json.loads(skills_list())
+            refused = json.loads(skill_view("deploy"))
+            loaded = {h: json.loads(skill_view(h)) for h in refused["load_as"]}
+
+        assert refused["success"] is False
+        assert "Ambiguous skill name 'deploy'" in refused["error"]
+        assert sorted(refused["load_as"]) == ["alpha/deploy", "beta/deploy"]
+        assert all(r["success"] is True and r["name"] == "deploy" for r in loaded.values())
+        assert loaded["alpha/deploy"]["content"] != loaded["beta/deploy"]["content"]
+        by_name = {s["name"]: s for s in listing["skills"]}
+        assert sorted(by_name["deploy"]["load_as"]) == sorted(refused["load_as"])
+        assert "load_as" not in by_name["solo"]
+
 
     def test_support_markdown_does_not_collide_with_real_skill(self, tmp_path):
         """Supporting reference docs named <skill>.md are not skills.
