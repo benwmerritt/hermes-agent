@@ -906,6 +906,10 @@ The keyword mode supports standard FTS5 query syntax:
 - `detail` — `adaptive` (default) fully hydrates only the top discovery result; `full` hydrates every discovery result.
 - `role_filter` — comma-separated roles to include. Discovery defaults to `user,assistant` (tool output is usually noise). Pass `user,assistant,tool` to include tool output (debugging tool behaviour) or `tool` to search tool output only.
 
+### Size bounds and recovery
+
+Every shape is character-bounded, not just message-count-bounded. Each message's `content` is capped per shape (1200 chars in bookends, 4000 in discovery windows and scroll, 2000 on read) and a `tool_calls` entry's `function.arguments` is capped the same way; a capped message carries `content_truncated` / `tool_calls_truncated` with `original_content_chars` / `original_tool_calls_chars`. On top of that, one response spends at most ~40K chars of content across all of its messages. Past that, lower-priority messages (the outside of a window, the middle of a read, the context of lower-ranked hits — never a hit's anchor message) are cut to what remains or reduced to a stub (`content: ""`, `content_omitted: true`) that keeps its `id` and `role`, and the response carries a `budget` block (`messages_truncated`, `messages_omitted`, `recover`). To get anything that was cut: scroll to the message by id with `window=1`, or export the full transcript with `hermes sessions export <out.jsonl> --session-id <id>` and read the file.
+
 ### When It's Used
 
 The agent is prompted to use session search automatically:

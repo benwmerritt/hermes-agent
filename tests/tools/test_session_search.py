@@ -17,6 +17,8 @@ import pytest
 from hermes_state import SessionDB
 from tools.session_search_tool import (
     _format_timestamp,
+    _READ_MAX_CONTENT,
+    _RESPONSE_CONTENT_BUDGET,
     _is_compacted_message,
     _resolve_to_parent,
     _session_link,
@@ -215,6 +217,8 @@ class TestDiscoveryShape:
             assert hit["bookend_end"] == []
 
     def test_adaptive_detail_preserves_ranking_and_reduces_payload(self, db):
+        # Sized so even the full payload stays under _RESPONSE_CONTENT_BUDGET: the ratio is
+        # a hydration contract, and the budget would clamp both shapes to the same size.
         now = int(time.time())
         for session_index in range(3):
             session_id = f"payload_{session_index}"
@@ -227,18 +231,18 @@ class TestDiscoveryShape:
                 db.append_message(
                     session_id,
                     role="user" if message_index % 2 == 0 else "assistant",
-                    content=f"opening {session_index}-{message_index} " + "o" * 2500,
+                    content=f"opening {session_index}-{message_index} " + "o" * 600,
                 )
             db.append_message(
                 session_id,
                 role="user",
-                content=f"payloadneedle anchor {session_index} " + "a" * 3500,
+                content=f"payloadneedle anchor {session_index} " + "a" * 1000,
             )
             for message_index in range(8):
                 db.append_message(
                     session_id,
                     role="assistant" if message_index % 2 == 0 else "user",
-                    content=f"closing {session_index}-{message_index} " + "c" * 2500,
+                    content=f"closing {session_index}-{message_index} " + "c" * 600,
                 )
         db._conn.commit()
 
@@ -263,6 +267,30 @@ class TestDiscoveryShape:
         result = json.loads(session_search(query="modpack", db=db, current_session_id="s_newest"))
         sids = [r["session_id"] for r in result["results"]]
         assert "s_newest" not in sids
+
+    def test_full_discovery_total_content_is_character_bounded(self, db):
+        # detail=full over limit=10 hydrates ~17 messages per hit; with every message under
+        # its own cap the response still passed the whole-turn budget. Every hit's anchor
+        # (the evidence) survives before any hit keeps its context; dropped messages keep
+        # their ids so the agent can scroll to exactly what was cut.
+        filler = "modpack " * 230  # ~1.8K chars, under every per-message cap
+        for i in range(10):
+            sid = f"s_wide_{i}"
+            db.create_session(sid, source="cli")
+            for j in range(30):
+                db.append_message(sid, role="user" if j % 2 == 0 else "assistant", content=f"[{sid} m{j}] {filler}")
+        db._conn.commit()
+        result = json.loads(session_search(query="modpack", detail="full", limit=10, db=db))
+        assert result["success"] is True and result["count"] >= 5
+        hydrated = [m for r in result["results"] for k in ("bookend_start", "messages", "bookend_end") for m in r[k]]
+        assert sum(len(m.get("content") or "") for m in hydrated) <= _RESPONSE_CONTENT_BUDGET
+        for hit in result["results"]:
+            anchor = next(m for m in hit["messages"] if m["id"] == hit["match_message_id"])
+            assert not anchor.get("content_omitted") and anchor["content"].startswith(f"[{hit['session_id']} ")
+        omitted = [m for m in hydrated if m.get("content_omitted")]
+        assert omitted and all(m["id"] and m["role"] for m in omitted)
+        assert result["budget"]["messages_omitted"] == len(omitted)
+        assert "around_message_id" in result["budget"]["recover"]
 
 
 class TestDiscoverySort:
@@ -315,6 +343,22 @@ class TestScrollShape:
             session_id=anchor_sid, around_message_id=anchor_mid, window=999, db=db
         ))
         assert result["window"] == 20
+
+    def test_scroll_caps_oversized_message_content(self, db):
+        # Discovery and read cap per-message content; scroll returned the window verbatim, so
+        # scrolling into a hit next to an archived 80K tool result undid the caps.
+        db.create_session("s_scroll_big", source="cli")
+        db.append_message("s_scroll_big", role="user", content="run it")
+        mid = db.append_message("s_scroll_big", role="assistant", content="y" * 80_000)
+        db.append_message("s_scroll_big", role="user", content="thanks")
+        db._conn.commit()
+        raw = session_search(session_id="s_scroll_big", around_message_id=mid, window=1, db=db)
+        result = json.loads(raw)
+        assert result["success"] is True and result["mode"] == "scroll"
+        assert len(raw) < 80_000 // 4
+        big = next(m for m in result["messages"] if m["id"] == mid)
+        assert big["content_truncated"] is True and big["original_content_chars"] == 80_000
+        assert big["anchor"] is True
 
 
     def test_scroll_rejects_active_delegation_child_in_current_lineage(self, db):
@@ -441,6 +485,48 @@ class TestReadShape:
         assert big["original_content_chars"] == 80_000
         assert sum(len(m.get("content") or "") for m in result["messages"]) < 5_000
 
+    def test_read_caps_nested_tool_call_arguments(self, db):
+        # The per-message content cap guards ``content`` only; a tool_calls payload (a skill
+        # body handed to skill_manage, a write_file body) rode along whole and took a
+        # 4-message read past 70K chars. Ids and names must survive so the call still pairs
+        # with its tool result.
+        body = "skill body " * 8_000
+        calls = [{"id": "call_1", "type": "function", "function": {
+            "name": "skill_manage", "arguments": json.dumps({"action": "create", "content": body})}}]
+        db.create_session("s_calls", source="cli")
+        db.append_message("s_calls", role="user", content="create the skill")
+        db.append_message("s_calls", role="assistant", content="Creating it.", tool_calls=calls)
+        db.append_message("s_calls", role="tool", content="ok", tool_name="skill_manage", tool_call_id="call_1")
+        db._conn.commit()
+        raw = session_search(session_id="s_calls", db=db)
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert len(raw) < 3 * _READ_MAX_CONTENT + 2_000
+        turn = next(m for m in result["messages"] if m.get("tool_calls"))
+        assert turn["tool_calls_truncated"] is True
+        assert turn["original_tool_calls_chars"] > len(body)
+        assert turn["tool_calls"][0]["id"] == "call_1"
+        assert turn["tool_calls"][0]["function"]["name"] == "skill_manage"
+
+    def test_read_total_content_is_character_bounded(self, db):
+        # head+tail is a message-count window: 30 messages each under the per-message cap
+        # still sum past the response budget. The ends (goal, resolution) survive first;
+        # dropped messages keep id/role as scroll handles and the response says how to recover.
+        filler = "x" * (_READ_MAX_CONTENT - 10)
+        db.create_session("s_wide", source="cli")
+        for i in range(40):
+            db.append_message("s_wide", role="user" if i % 2 == 0 else "assistant", content=f"m{i} {filler}")
+        db._conn.commit()
+        result = json.loads(session_search(session_id="s_wide", db=db))
+        assert result["success"] is True
+        assert len(result["messages"]) == 30  # the count window is unchanged
+        assert sum(len(m.get("content") or "") for m in result["messages"]) <= _RESPONSE_CONTENT_BUDGET
+        omitted = [m for m in result["messages"] if m.get("content_omitted")]
+        assert omitted and all(m["id"] and m["role"] and m["original_content_chars"] for m in omitted)
+        assert not result["messages"][0].get("content_omitted") and not result["messages"][-1].get("content_omitted")
+        budget = result["budget"]
+        assert budget["messages_omitted"] == len(omitted)
+        assert "around_message_id" in budget["recover"] and "hermes sessions export" in budget["recover"]
     def test_title_match_entry_caps_content_like_fts_hits(self, db):
         """A session-title match is a discovery entry: bookends 1200, window 4000, same as FTS hits."""
         db.create_session("s_titled", source="cli")
