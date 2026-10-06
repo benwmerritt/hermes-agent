@@ -1679,6 +1679,7 @@ class GatewayStartupMixin:
         return build_session_key(
             dest.source, group_sessions_per_user=extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=extra.get("thread_sessions_per_user", False), profile=handoff_profile,
+            gateway_config=dest.handoff_config,
         )
 
     async def _process_handoff(self, row: Dict[str, Any], profile_name: Optional[str] = None) -> None:

@@ -107,7 +107,7 @@ def handle_api_error(
     _compressor = getattr(agent, "context_compressor", None)
     _ctx_len = getattr(_compressor, "context_length", 200000) if _compressor else 200000
     classified = classify_api_error(
-        api_error, provider=getattr(agent, "provider", "") or "",
+        api_error, conversation_only=bool(getattr(agent, "conversation_only", False)), provider=getattr(agent, "provider", "") or "",
         model=getattr(agent, "model", "") or "", approx_tokens=approx_tokens,
         context_length=_ctx_len, num_messages=len(api_messages) if api_messages else 0,
         base_url=str(getattr(agent, "base_url", "") or ""),

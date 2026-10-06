@@ -2435,7 +2435,8 @@ class BasePlatformAdapter(ABC):
         return build_session_key(
             source, group_sessions_per_user=extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=extra.get("thread_sessions_per_user", False),
-            profile=self._session_key_profile(source))
+            profile=self._session_key_profile(source),
+            gateway_config=getattr(getattr(self, "_session_store", None), "config", None))
 
     def _text_batch_key(self, event: "MessageEvent") -> str:
         """Session-scoped key for text batching (subclasses may override)."""

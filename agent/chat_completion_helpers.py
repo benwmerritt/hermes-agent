@@ -1479,7 +1479,13 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     """
     from agent.opencode_affinity import merge_session_affinity_headers
 
-    kwargs = _build_api_kwargs_for_mode(agent, api_messages, tools_for_api)
+    restricted = bool(getattr(agent, "conversation_only", False))
+    kwargs = _build_api_kwargs_for_mode(agent, api_messages, [] if restricted else tools_for_api)
+    if restricted:
+        for payload in (kwargs, kwargs.get("extra_body")):
+            if isinstance(payload, dict):
+                for key in ("tools", "tool_choice", "parallel_tool_calls", "functions", "function_call", "toolConfig"):
+                    payload.pop(key, None)
     return merge_session_affinity_headers(
         kwargs,
         getattr(agent, "provider", None),
@@ -2025,7 +2031,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
             continue
 
         try:
-            from agent.auxiliary_client import resolve_provider_client
+            from agent.conversation_policy import resolve_agent_client, check_agent_transport
             from hermes_cli.fallback_config import resolve_entry_api_key
             # Pass the entry's base_url/api_key so custom endpoints (Ollama Cloud) resolve instead
             # of falling through to OpenRouter defaults.
@@ -2038,8 +2044,9 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
                 from agent.secret_scope import get_secret
                 fb_api_key_hint = get_secret("OLLAMA_API_KEY") or None
             # raw_codex=True: the main agent needs direct responses.stream() access for Codex providers.
-            fb_client, _resolved_fb_model = resolve_provider_client(
-                fb_provider, model=fb_model, raw_codex=True, explicit_base_url=fb_base_url_hint, explicit_api_key=fb_api_key_hint, api_mode=fb_api_mode)
+            check_agent_transport(agent, provider=fb_provider, api_mode=fb_api_mode, base_url=fb_base_url_hint)
+            fb_client, _resolved_fb_model = resolve_agent_client(
+                agent, fb_provider, model=fb_model, raw_codex=True, explicit_base_url=fb_base_url_hint, explicit_api_key=fb_api_key_hint, api_mode=fb_api_mode)
             if fb_client is None:
                 logger.warning("Fallback to %s failed: provider not configured", fb_provider)
                 unavailable.add(fb_key)
@@ -2067,6 +2074,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
                 elif not fb_api_mode_explicit and fb_api_mode == "chat_completions":
                     fb_api_mode = _fallback_api_mode_resolved(agent, fb_provider, fb_model, fb_base_url)
 
+            check_agent_transport(agent, provider=fb_provider, api_mode=fb_api_mode, base_url=fb_base_url)
             old_model, old_provider, old_base_url = agent.model, agent.provider, agent.base_url
 
             # Clear the per-config context_length override so the fallback model's own context
@@ -3673,7 +3681,7 @@ class _StreamingCall(StreamingWaitMonitor):
         with contextlib.suppress(Exception):
             from agent.error_classifier import classify_api_error
             _cls = classify_api_error(
-                error, provider=str(getattr(self.agent, "provider", "") or ""), model=str(getattr(self.agent, "model", "") or ""))
+                error, conversation_only=bool(getattr(self.agent, "conversation_only", False)), provider=str(getattr(self.agent, "provider", "") or ""), model=str(getattr(self.agent, "model", "") or ""))
         _reset_stale_streak(self.agent)  # deltas fired => provider responsive: clear the breaker
         # #106260: continuing after a context-overflow error re-sends a larger request into the
         # same overflow. Return an EMPTY stub marked terminal so the loop ends the turn instead.

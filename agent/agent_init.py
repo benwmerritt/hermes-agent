@@ -834,9 +834,9 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     no-provider diagnostic. ``None`` when the chain landed on a MoA preset: the facade is
     already bound and there is no OpenAI client to construct.
     """
-    from agent.auxiliary_client import resolve_provider_client
-    _routed_client, _ = resolve_provider_client(
-        agent.provider or "auto", model=agent.model, raw_codex=True)
+    from agent.conversation_policy import resolve_agent_client, check_agent_transport
+    _routed_client, _ = resolve_agent_client(
+        agent, agent.provider or "auto", model=agent.model, raw_codex=True)
     if _routed_client is not None:
         from hermes_cli.providers import is_actual_route, normalize_provider
         effective_provider = getattr(_routed_client, "_hermes_aux_effective_provider", "")
@@ -853,9 +853,10 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     for _fb in _fallback_entries(fallback_model):
         try:
             from hermes_cli.fallback_config import resolve_entry_api_key
+            check_agent_transport(agent, provider=_fb["provider"], api_mode=_fb.get("api_mode"), base_url=_fb.get("base_url"))
             _fb_explicit_key = resolve_entry_api_key(_fb)
-            _fb_client, _fb_model = resolve_provider_client(
-                _fb["provider"], model=_fb["model"], raw_codex=True,
+            _fb_client, _fb_model = resolve_agent_client(
+                agent, _fb["provider"], model=_fb["model"], raw_codex=True,
                 explicit_base_url=_fb.get("base_url"), explicit_api_key=_fb_explicit_key,
             )
         except Exception as _fb_exc:
@@ -1058,6 +1059,13 @@ def _init_fallback_chain(agent, fallback_model):
 
 
 def _load_tools(agent, enabled_toolsets, disabled_toolsets):
+    if agent.conversation_only:
+        agent.tools = []
+        agent.valid_tool_names = set()
+        agent._tool_snapshot_generation = -1
+        agent._skip_mcp_refresh = True
+        agent._kanban_worker_guidance = ""
+        return
     # A multiplexed gateway may have switched HERMES_HOME since model_tools was imported;
     # make sure this profile's plugins are discovered before the tool snapshot.
     try:
@@ -1328,6 +1336,10 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
             _ra().logger.warning("Memory provider plugin init failed: %s", _mpe)
             agent._memory_manager = None
 
+    if getattr(agent, "conversation_only", False):
+        agent.tools = []
+        agent.valid_tool_names = set()
+        return
     from agent.memory_manager import inject_memory_provider_tools
     inject_memory_provider_tools(agent)
 
@@ -1916,6 +1928,28 @@ def _compressor_max_tokens(agent):
     return None
 
 
+def _build_conversation_only_context_engine(agent):
+    """Use a host-owned compressor; configured context-engine plugins can expose tools."""
+    from agent.context_compressor import ContextCompressor
+    agent.context_compressor = ContextCompressor(
+        model=agent.model, quiet_mode=True, base_url=agent.base_url, conversation_only=True,
+        api_key=getattr(agent, "api_key", ""), provider=agent.provider, api_mode=agent.api_mode,
+    )
+    agent.compression_enabled = False
+    agent.compression_in_place = True
+    agent.tools = []
+    agent.valid_tool_names = set()
+    agent._context_engine_tool_names = set()
+    agent._memory_store = None
+    agent._memory_manager = None
+    agent._memory_enabled = False
+    agent._user_profile_enabled = False
+    agent._memory_write_origin = None
+    agent._memory_write_context = None
+    agent._spawn_background_review = lambda *args, **kwargs: None
+    agent._background_review_run = None
+
+
 def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db):
     _selected_engine = _select_context_engine(_agent_cfg)
     if _selected_engine is not None:
@@ -2057,6 +2091,10 @@ def _warn_nonagentic_hermes_model(agent):
 
 
 def _inject_context_engine_tools(agent):
+    if getattr(agent, "conversation_only", False):
+        agent.tools = []
+        agent.valid_tool_names = set()
+        return
     # Context engine tool schemas (lcm_*), deduped against existing names (plugins may
     # register the same schemas; duplicates 400 provider-side) and gated on enabled_toolsets
     # so `platform_toolsets: telegram: []` can't leak them.
@@ -2338,7 +2376,8 @@ def init_agent(
     chat_id: str = None, chat_name: str = None, chat_type: str = None, thread_id: str = None,
     gateway_session_key: str = None, skip_context_files: bool = False,
     load_soul_identity: bool = False, skip_memory: bool = False,
-    skip_background_review: bool = False, session_db=None, parent_session_id: str = None,
+    skip_background_review: bool = False, conversation_only: bool = False,
+    session_db=None, parent_session_id: str = None,
     iteration_budget: "IterationBudget" = None, run_budget_seconds: Optional[float] = None,
     fallback_model: Dict[str, Any] = None, credential_pool=None, checkpoints_enabled: bool = False,
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
@@ -2362,7 +2401,25 @@ def init_agent(
     agent.background_review_callback = None  # Optional sync callback for gateway delivery
     agent.memory_notifications = "on"  # Memory update notifications: "off", "on", "verbose"
     # Skips the end-of-turn review fork (~30K tokens/event); one switch for both review paths.
-    agent.skip_background_review = bool(skip_background_review)
+    agent._skip_mcp_refresh = bool(conversation_only)
+    agent.skip_background_review = bool(skip_background_review or conversation_only)
+    agent.conversation_only = bool(conversation_only)
+    if agent.conversation_only:
+        agent.skip_memory = True
+        agent._memory_write_origin = None
+        agent._memory_write_context = None
+        agent._background_review_run = None
+        agent._spawn_background_review = lambda *args, **kwargs: None
+        agent.enabled_toolsets = []
+        agent.disabled_toolsets = []
+        agent.ephemeral_system_prompt = ""
+        agent.prefill_messages = []
+        agent._platform_hint_overrides = {}
+        agent._soul_prompt_override = ""
+        agent._execution_guidance = False
+        agent._tool_use_enforcement = False
+        agent.load_soul_identity = False
+        agent.skip_context_files = True
     agent.log_prefix = f"{log_prefix} " if log_prefix else ""
     # Effective base URL for feature detection (prompt caching, reasoning, etc.)
     from hermes_cli.providers import is_actual_route
@@ -2386,6 +2443,8 @@ def init_agent(
     agent.acp_args = list(acp_args or args or [])
     _resolve_api_mode(agent, api_mode, provider_name, base_url)
     _finalize_routing(agent, api_mode, credential_pool)
+    from agent.conversation_policy import check_agent_transport
+    check_agent_transport(agent)
 
     # Platform callbacks are stored under their parameter names verbatim.
     for _cb in _CALLBACK_PARAMS:
@@ -2395,9 +2454,13 @@ def init_agent(
     _set_defaults(agent, _CONTROL_STATE)
 
     # reasoning_content echo opt-in; switch_model / fallback / restore keep it in sync.
-    agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
+    if conversation_only:
+        agent._read_reasoning_echo_from_config = lambda: False
+        agent._reasoning_echo_flag = False
+    else:
+        agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
     agent.request_overrides = dict(request_overrides or {})
-    agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
+    agent.prefill_messages = [] if conversation_only else (prefill_messages or [])
     agent._force_ascii_payload = False
     # Every (provider, model) that rejected image content this session. build_api_request strips
     # images from requests to those models only, so history keeps them for any model that can see.
@@ -2415,25 +2478,51 @@ def init_agent(
         checkpoints_enabled, checkpoint_max_snapshots, checkpoint_max_total_size_mb, checkpoint_max_file_size_mb,
     )
 
-    # Load config once for memory, skills, and compression sections
-    try:
-        from hermes_cli.config import load_config_readonly as _load_agent_config
-        _agent_cfg = _load_agent_config()
-    except Exception:
+    if conversation_only:
         _agent_cfg = {}
+    else:
+        try:
+            from hermes_cli.config import load_config_readonly as _load_agent_config
+            _agent_cfg = _load_agent_config()
+        except Exception:
+            _agent_cfg = {}
 
     _apply_display_config(agent, _agent_cfg, platform)
-    _init_memory(agent, _agent_cfg, skip_memory, platform)
+    if conversation_only:
+        agent._memory_store = None
+        agent._memory_manager = None
+        agent._memory_enabled = False
+        agent._user_profile_enabled = False
+        agent._memory_nudge_interval = 0
+        agent._turns_since_memory = 0
+        agent._iters_since_skill = 0
+        agent._memory_write_origin = None
+        agent._memory_write_context = None
+    else:
+        _init_memory(agent, _agent_cfg, skip_memory, platform)
     _apply_agent_section(agent, _agent_cfg)
     cs = _parse_compression_config(agent, _agent_cfg)
     _config_context_length, _custom_providers, _effective_context_length, _model_cfg = _resolve_context_length(
         agent, _agent_cfg, base_url
     )
-    _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db)
+    if conversation_only:
+        _build_conversation_only_context_engine(agent)
+    else:
+        _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db)
     _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length)
     _enforce_minimum_context(agent)
     _warn_nonagentic_hermes_model(agent)
-    _inject_context_engine_tools(agent)
+    if getattr(agent, "conversation_only", False):
+        agent.tools = []
+        agent.valid_tool_names = set()
+        agent._context_engine_tool_names = set()
+        agent._memory_store = None
+        agent._memory_manager = None
+        agent._memory_enabled = False
+        agent._user_profile_enabled = False
+        agent.compression_enabled = False
+    else:
+        _inject_context_engine_tools(agent)
     _init_usage_state(agent)
     _clamp_compressor_to_ollama_num_ctx(agent)
     _emit_compression_summary(agent, cs)

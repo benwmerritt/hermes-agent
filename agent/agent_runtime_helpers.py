@@ -1234,6 +1234,8 @@ def restore_primary_runtime(agent) -> bool:
     if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
         return False  # primary still in rate-limit cooldown, stay on fallback
     rt = agent._primary_runtime
+    from agent.conversation_policy import check_agent_transport
+    check_agent_transport(agent, **{key: (rt or {}).get(key) for key in ("provider", "api_mode", "base_url")})
     primary_provider = str((rt or {}).get("provider") or "").strip().lower()
     primary_model = str((rt or {}).get("model") or "").strip()
     from agent.fallback_cooldown import _is_entitlement_rejected
@@ -1719,6 +1721,8 @@ def _provider_supplied_client(agent, client_kwargs: dict) -> Any | None:
     then by ``base_url`` prefix so a URL-only runtime (``acp://…``) still reaches its profile.
     A profile that raises is logged and skipped: a third-party plugin must not be able to take
     the turn down, it can only fail to provide a client."""
+    if getattr(agent, "conversation_only", False):
+        return None
     try:
         from providers import get_provider_profile
     except Exception:
@@ -1802,6 +1806,8 @@ def _gemini_native_client(agent, client_kwargs: dict, httpx_verify, *, reason: s
 
 
 def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
+    from agent.conversation_policy import check_agent_transport
+    check_agent_transport(agent, base_url=client_kwargs.get("base_url"))
     from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls
     from agent.ssl_verify import resolve_httpx_verify
     # Treat client_kwargs as read-only: callers pass agent._client_kwargs, and in-place mutation
@@ -1989,6 +1995,8 @@ def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mo
         if effective_base_url:
             from hermes_cli.auth import normalize_actual_base_url
             base_url = normalize_actual_base_url(effective_base_url)
+    from agent.conversation_policy import check_agent_transport
+    check_agent_transport(agent, provider=new_provider, api_mode=api_mode, base_url=effective_base_url)
     destination_capabilities = (
         dict(capabilities)
         if isinstance(capabilities, dict)
@@ -2369,6 +2377,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     """Invoke a single tool (agent-level or registry-dispatched) and return the result string;
     no display logic. Used by the concurrent path; the sequential path keeps its own inline
     invocation for display."""
+    if getattr(agent, "conversation_only", False):
+        return json.dumps({"error": "Tool execution is disabled for this conversation."})
     from agent.inline_tool_executors import (
         InlineToolContext, apply_transform_tool_result, emit_terminal_post_tool_call,
         resolve_invoke_tool_executor, tool_hook_ids
