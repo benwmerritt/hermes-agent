@@ -46,6 +46,15 @@ logger = logging.getLogger("gateway.run")
 class GatewayTurnMixin:
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
+    def _is_conversation_only_peer(self, source) -> bool:
+        """A2A boundary keyed only by the adapter's authenticated source.user_id."""
+        if str(getattr(source, "platform", "") or "").lower() != "a2a":
+            return False
+        peers = getattr(getattr(self, "config", None), "a2a_conversation_only_peers", None)
+        if not isinstance(peers, list) or any(not isinstance(peer, str) or not peer.strip() for peer in peers):
+            return True
+        return ("*" in peers) or not isinstance(getattr(source, "user_id", None), str) or source.user_id in peers
+
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
         user_config: Optional[dict] = None,
@@ -2143,6 +2152,8 @@ class GatewayTurnMixin:
                 except Exception as e:
                     logger.warning("Background task vision enrichment failed: %s", e)
 
+            # A conversation-only task is isolated just like a peer's ordinary turn.
+            _background_conversation_only = self._is_conversation_only_peer(source)
             def run_sync():
                 agent = AIAgent(
                     model=turn_route["model"],
@@ -2151,8 +2162,15 @@ class GatewayTurnMixin:
                     max_iterations=max_iterations,
                     quiet_mode=True,
                     verbose_logging=False,
-                    enabled_toolsets=enabled_toolsets,
-                    disabled_toolsets=disabled_toolsets,
+                    conversation_only=_background_conversation_only,
+                    skip_memory=_background_conversation_only,
+                    skip_context_files=_background_conversation_only,
+                    load_soul_identity=not _background_conversation_only,
+                    skip_background_review=_background_conversation_only,
+                    enabled_toolsets=[] if _background_conversation_only else enabled_toolsets,
+                    disabled_toolsets=[] if _background_conversation_only else (disabled_toolsets or []),
+                    ephemeral_system_prompt="",
+                    prefill_messages=[] if _background_conversation_only else (getattr(self, "_prefill_messages", None) or []),
                     reasoning_config=reasoning_config,
                     service_tier=self._service_tier,
                     request_overrides=turn_route.get("request_overrides"),

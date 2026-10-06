@@ -98,7 +98,7 @@ def _midturn_request_pressure_tokens(
             "native Responses mid-turn estimate unavailable; using generic transcript estimate",
             exc_info=True,
         )
-    return approx_tokens + (_estimate_tools_tokens_rough(agent.tools) if agent.tools else 0)
+    return approx_tokens + (_estimate_tools_tokens_rough([] if getattr(agent, "conversation_only", False) else agent.tools) if agent.tools else 0)
 
 
 def _review_input_budget_exhausted(agent: Any) -> bool:
@@ -644,6 +644,10 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     Mutates ``agent._cached_system_prompt`` and persists a freshly-built prompt on first
     build. Row states ``missing``/``null``/``empty``/``present`` are logged and DB
     failures log at WARNING so silent prefix-cache misses show in ``agent.log``."""
+    if getattr(agent, "conversation_only", False):
+        agent._cached_system_prompt = agent._build_system_prompt(None)
+        agent._cached_system_prompt_static = agent._cached_system_prompt
+        return
     stored_prompt = None
     stored_state = "missing"
     session_row = None

@@ -1002,18 +1002,30 @@ class TurnRunner:
             inline_fallback=True,
         )
 
+    def _conversation_only_peer(self, source) -> bool:
+        """A2A restrictions use only authenticated source.user_id, never message metadata."""
+        if str(getattr(source, "platform", "") or "").lower() != "a2a":
+            return False
+        peers = getattr(self._ctx.user_config, "a2a_conversation_only_peers", None)
+        if not isinstance(peers, list) or any(not isinstance(peer, str) or not peer.strip() for peer in peers):
+            return True
+        return "*" in peers or not isinstance(getattr(source, "user_id", None), str) or source.user_id in peers
+
     def _build_fresh_agent(self, turn_route, platform_key, combined_ephemeral, max_iterations,
                            reasoning_config, pr, skip_context_files):
         from gateway.run import _checkpoint_agent_kwargs
         ctx = self._ctx
         runner = self._runner
         src = ctx.source
+        conversation_only = self._conversation_only_peer(src)
         return ctx.AIAgent(
             model=turn_route["model"], **turn_route["runtime"], **_checkpoint_agent_kwargs(ctx.user_config),
+            conversation_only=conversation_only,
             max_iterations=max_iterations, quiet_mode=True, verbose_logging=False,
-            enabled_toolsets=ctx.enabled_toolsets, disabled_toolsets=ctx.disabled_toolsets,
-            ephemeral_system_prompt=combined_ephemeral or None,
-            prefill_messages=runner._prefill_messages or None,
+            enabled_toolsets=[] if conversation_only else ctx.enabled_toolsets,
+            disabled_toolsets=[] if conversation_only else ctx.disabled_toolsets,
+            ephemeral_system_prompt=None if conversation_only else combined_ephemeral or None,
+            prefill_messages=None if conversation_only else runner._prefill_messages or None,
             reasoning_config=reasoning_config, service_tier=runner._service_tier,
             request_overrides=turn_route.get("request_overrides"),
             providers_allowed=pr.get("only"), providers_ignored=pr.get("ignore"), providers_order=pr.get("order"),
@@ -1027,9 +1039,10 @@ class TurnRunner:
             # Reload from disk — do not reuse the startup snapshot.
             # See #60955.
             fallback_model=self._runner._refresh_fallback_model(),
-            skip_context_files=skip_context_files,
-            # Keep the persona even with minimal context: soul identity is one small file.
-            load_soul_identity=True,
+            skip_context_files=True if conversation_only else skip_context_files,
+            load_soul_identity=False if conversation_only else True,
+            skip_memory=conversation_only,
+            skip_background_review=conversation_only,
         )
 
     def _resolve_turn_agent(self, turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr):
@@ -1038,8 +1051,10 @@ class TurnRunner:
         ctx = self._ctx
         runner = self._runner
         skip_context_files = self._skip_context_files(platform_key)
+        conversation_only = self._conversation_only_peer(ctx.source)
         sig = runner._agent_config_signature(
             turn_route["model"], turn_route["runtime"], ctx.enabled_toolsets, combined_ephemeral,
+            conversation_only=conversation_only,
             cache_keys=runner._extract_cache_busting_config(ctx.user_config),
             user_id=getattr(ctx.source, "user_id", None),
             user_id_alt=getattr(ctx.source, "user_id_alt", None),
