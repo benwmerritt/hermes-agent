@@ -1822,7 +1822,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     try:
         from providers import get_provider_profile
 
-        profile = get_provider_profile(getattr(agent, "provider", ""))
+        profile = None if getattr(agent, "conversation_only", False) else get_provider_profile(getattr(agent, "provider", ""))
         if profile is not None:
             for key, value in profile.build_client_kwargs_extras(
                 base_url=client_kwargs.get("base_url", "")

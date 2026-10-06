@@ -1428,7 +1428,8 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
     _profile = None
     with contextlib.suppress(Exception):
         from providers import get_provider_profile
-        _profile = get_provider_profile(agent.provider)
+        if not getattr(agent, "conversation_only", False):
+            _profile = get_provider_profile(agent.provider)
 
     _ephemeral_out = _consume_ephemeral_max_output(agent)
     # Strip image parts for non-vision models on BOTH paths (registered
