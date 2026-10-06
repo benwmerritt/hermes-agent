@@ -604,6 +604,7 @@ _STAGES: Sequence[Callable[[_Ctx], Optional[Verdict]]] = (
 def classify_api_error(
     error: Exception, *, provider: str = "", model: str = "",
     approx_tokens: int = 0, context_length: int = 200000, num_messages: int = 0,
+    conversation_only: bool = False,
 ) -> ClassifiedError:
     """Classify an API error into a structured recovery recommendation (see ``_STAGES``)."""
     status_code = _extract_status_code(error)
@@ -615,7 +616,8 @@ def classify_api_error(
         error, status_code, body, _build_error_msg(error, body), provider, model,
         approx_tokens, context_length, num_messages,
     )
-    verdict = next((v for v in (stage(c) for stage in _STAGES) if v is not None), _V_UNKNOWN)
+    stages = _STAGES[1:] if conversation_only else _STAGES
+    verdict = next((v for v in (stage(c) for stage in stages) if v is not None), _V_UNKNOWN)
     base = {"status_code": status_code, "provider": provider, "model": model, "message": _extract_message(error, body)}
     return ClassifiedError(**{**base, **verdict})
 

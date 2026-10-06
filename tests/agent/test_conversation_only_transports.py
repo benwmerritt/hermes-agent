@@ -122,3 +122,84 @@ def test_initial_fallback_and_recursive_auto_resolution_reject_execution(tmp_pat
     create.assert_not_called()
     # Resolution scope never bleeds into another agent's call.
     assert auxiliary_client.resolve_provider_client("custom", "ordinary") == (None, None)
+
+
+def test_restricted_title_never_spawns_daemon_or_auxiliary_client(tmp_path, monkeypatch):
+    import subprocess
+    from agent import title_generator, auxiliary_client
+    from agent.turn_context import _maybe_title_session_at_turn_start
+    from hermes_state import SessionDB
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("auxiliary:\n  title_generation:\n    enabled: true\n    provider: copilot-acp\n")
+    db = SessionDB(tmp_path / "titles.db")
+    db.create_session(session_id="title-test", source="a2a")
+    agent = SimpleNamespace(conversation_only=True, _session_db=db, session_id="title-test",
+                            _session_db_created=True, platform="a2a", provider="custom", model="test")
+    forbidden = Mock(side_effect=AssertionError("restricted title execution"))
+    monkeypatch.setattr(title_generator.threading, "Thread", forbidden)
+    monkeypatch.setattr(auxiliary_client, "resolve_provider_client", forbidden)
+    monkeypatch.setattr(subprocess, "Popen", forbidden)
+    try:
+        _maybe_title_session_at_turn_start(agent, [{"role": "user", "content": "Help plan my garden"}])
+        forbidden.assert_not_called()
+        assert db.get_session_title("title-test") is None
+        # The ordinary path still reaches the actual daemon creation site.
+        thread = Mock()
+        monkeypatch.setattr(title_generator.threading, "Thread", thread)
+        agent.conversation_only = False
+        _maybe_title_session_at_turn_start(agent, [{"role": "user", "content": "Help plan my garden"}])
+        thread.assert_called_once()
+        thread.return_value.start.assert_called_once()
+        assert db.get_session_title("title-test")
+        forbidden.assert_not_called()
+    finally:
+        db.close()
+
+
+def test_moa_rejected_before_facade_or_constituent_routing(tmp_path, monkeypatch):
+    import base64
+    import json
+    import subprocess
+    from run_agent import AIAgent
+    from agent import agent_init, moa_loop, conversation_loop
+    from agent.conversation_policy import resolve_agent_client
+    from hermes_cli.moa_config import MOA_MARKER_PREFIX
+
+    monkeypatch.chdir(tmp_path)
+    forbidden = Mock(side_effect=AssertionError("MoA constituent construction"))
+    monkeypatch.setattr(moa_loop, "build_moa_facade", forbidden)
+    monkeypatch.setattr(moa_loop, "call_llm", forbidden)
+    monkeypatch.setattr(subprocess, "Popen", forbidden)
+    with pytest.raises(ValueError, match="MoA"):
+        AIAgent(provider="moa", model="test", conversation_only=True)
+    with pytest.raises(ValueError, match="MoA"):
+        resolve_agent_client(SimpleNamespace(conversation_only=True), "moa", model="test")
+    agent = AIAgent(provider="custom", base_url="https://example.invalid/v1", api_key="test-key",
+                    model="test", conversation_only=True, quiet_mode=True)
+    config = {"reference_models": [{"provider": "copilot-acp", "model": "native"}],
+              "aggregator": {"provider": "copilot-acp", "model": "native"}}
+    inline = MOA_MARKER_PREFIX + base64.urlsafe_b64encode(json.dumps({"prompt": "hello", "config": config}).encode()).decode()
+    try:
+        for text, options in ((inline, {}), ("hello", {"moa_config": config})):
+            with pytest.raises(ValueError, match="MoA"):
+                conversation_loop.run_conversation(agent, text, **options)
+        forbidden.assert_not_called()
+        # Normal inline requests pass the policy gate and reach turn preparation.
+        class Prepared(Exception):
+            pass
+        prepare = Mock(side_effect=Prepared)
+        monkeypatch.setattr(conversation_loop, "begin_fast_mode_turn", prepare)
+        agent.conversation_only = False
+        with pytest.raises(Prepared):
+            conversation_loop.run_conversation(agent, inline)
+        prepare.assert_called_once()
+        facade = Mock(return_value=object())
+        monkeypatch.setattr(moa_loop, "build_moa_facade", facade)
+        agent.provider = "moa"
+        agent_init._init_moa_client(agent, "")
+        facade.assert_called_once()
+        forbidden.assert_not_called()
+    finally:
+        agent.close()

@@ -142,6 +142,8 @@ _UNTITLED_PLATFORMS = frozenset({"cron", "subagent"})
 
 def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
     """Kick off auto-titling for the session's first user message; never fatal."""
+    if getattr(agent, "conversation_only", False):
+        return
     session_db = getattr(agent, "_session_db", None)
     session_id = getattr(agent, "session_id", None)
     if not session_db or not session_id:

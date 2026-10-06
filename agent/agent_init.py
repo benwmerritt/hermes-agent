@@ -1828,7 +1828,7 @@ def _build_conversation_only_context_engine(agent):
     """Use a host-owned compressor; configured context-engine plugins can expose tools."""
     from agent.context_compressor import ContextCompressor
     agent.context_compressor = ContextCompressor(
-        model=agent.model, quiet_mode=True, base_url=agent.base_url,
+        model=agent.model, quiet_mode=True, base_url=agent.base_url, conversation_only=True,
         api_key=getattr(agent, "api_key", ""), provider=agent.provider, api_mode=agent.api_mode,
     )
     agent.compression_enabled = False

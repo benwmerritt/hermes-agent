@@ -37,6 +37,8 @@ class StreamDeliveryMixin:
 
     def _enqueue_stream_hook(self, event: str, *, label: str | None = None, **fields: Any) -> None:
         """Best-effort plugin stream hook enqueue; never raises into the stream path."""
+        if getattr(self, "conversation_only", False):
+            return
         try:
             from agent.plugin_stream_hooks import enqueue_plugin_stream_hook
 
@@ -323,6 +325,8 @@ class StreamDeliveryMixin:
             self._note_dropped_stream_writer("_fire_reasoning_delta")
             return
         self._call_quietly(self.reasoning_callback, text)
+        if getattr(self, "conversation_only", False):
+            return
         try:
             from agent.plugin_stream_hooks import stream_reasoning_deltas_enabled
 
@@ -339,6 +343,8 @@ class StreamDeliveryMixin:
 
     def _has_stream_consumers(self) -> bool:
         """Return True if any streaming consumer is registered."""
+        if getattr(self, "conversation_only", False):
+            return self.stream_delta_callback is not None or getattr(self, "_stream_callback", None) is not None
         try:
             from agent.plugin_stream_hooks import has_stream_observer_hooks
 

@@ -3274,7 +3274,7 @@ class _StreamingCall(StreamingWaitMonitor):
         with contextlib.suppress(Exception):
             from agent.error_classifier import classify_api_error
             _cls = classify_api_error(
-                error, provider=str(getattr(self.agent, "provider", "") or ""), model=str(getattr(self.agent, "model", "") or ""))
+                error, conversation_only=bool(getattr(self.agent, "conversation_only", False)), provider=str(getattr(self.agent, "provider", "") or ""), model=str(getattr(self.agent, "model", "") or ""))
             if _cls.reason == FailoverReason.content_policy_blocked:
                 _stub._content_filter_terminated = True
         _reset_stale_streak(self.agent)  # deltas fired => provider responsive: clear the breaker

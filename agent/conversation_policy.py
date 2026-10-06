@@ -10,6 +10,8 @@ def require_conversation_transport(restricted, provider=None, api_mode=None, bas
     if not restricted:
         return
     provider = str(provider or "").strip().lower()
+    if provider == "moa":
+        raise ValueError("MoA is disabled for conversation-only agents")
     mode = str(api_mode or "").strip().lower()
     scheme = urlsplit(str(base_url or "")).scheme.lower()
     if (mode in {"codex_app_server", "acp"}

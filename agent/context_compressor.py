@@ -139,7 +139,7 @@ def _response_finish_reason(response: Any) -> str:
 _TRUNCATED_SUMMARY_MARKER = "finish_reason=length"
 
 
-def _is_summary_access_or_quota_error(exc: Exception) -> bool:
+def _is_summary_access_or_quota_error(exc: Exception, *, conversation_only: bool = False) -> bool:
     """Return True for non-retryable summary auth, permission, or quota errors."""
 
     # No active secret scope is a missing-credential failure of our own making;
@@ -155,7 +155,7 @@ def _is_summary_access_or_quota_error(exc: Exception) -> bool:
         UnscopedSecretError = ()  # type: ignore[assignment]
     if UnscopedSecretError and isinstance(exc, UnscopedSecretError):
         return True
-    reason = classify_api_error(exc).reason
+    reason = classify_api_error(exc, conversation_only=conversation_only).reason
     if reason is FailoverReason.rate_limit:
         return False
     if reason in {FailoverReason.auth, FailoverReason.auth_permanent}:
@@ -2264,8 +2264,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
-        custom_providers: list | None = None,
+        custom_providers: list | None = None, conversation_only: bool = False,
     ):
+        self.conversation_only = bool(conversation_only)
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
         self.tail_mode = tail_mode if tail_mode in ("legacy", "lean") else "lean"
@@ -3469,7 +3470,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         kind = _classify_summary_failure(e)
         # Auth/permission/quota failures are not retryable: flag so compress() preserves the
         # session. A distinct summary_model still gets the one-shot main-model fallback.
-        if _is_summary_access_or_quota_error(e):
+        if _is_summary_access_or_quota_error(e, conversation_only=getattr(self, "conversation_only", False)):
             # Field name kept for caller compatibility; now covers the whole access/quota class.
             self._last_summary_auth_failure = True
         if kind.json_decode and not kind.model_not_found and not kind.timeout:

@@ -44,6 +44,9 @@ class GatewayInboundMixin:
         """Run the ``pre_gateway_dispatch`` plugin hook; None = drop, else the (maybe rewritten) event.
         Results: ``{"action": "skip"}`` → drop; ``{"action": "rewrite", "text"}`` → replace ``event.text``;
         ``allow``/None → normal dispatch. Runs BEFORE auth so plugins can handle unauthorized senders."""
+        from gateway.config import is_conversation_only_peer
+        if is_conversation_only_peer(getattr(self, "config", None), source):
+            return event
         try:
             from hermes_cli.lifecycle import invoke_hook as _invoke_hook
             _hook_results = _invoke_hook(

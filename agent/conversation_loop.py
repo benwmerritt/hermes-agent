@@ -1423,6 +1423,9 @@ def run_conversation(
             user_message, persist_user_message
         )
 
+    if getattr(agent, "conversation_only", False) and moa_config is not None:
+        raise ValueError("MoA is disabled for conversation-only agents")
+
     # The gateway caches agents across turns; compression state is per-turn, or a stale
     # in-place boundary would make a later uncompressed result look compacted.
     agent._last_compaction_in_place = agent._last_compression_attempt_recorded = False
