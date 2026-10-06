@@ -54,9 +54,9 @@ def unset_reasoning_default(agent) -> dict | None:
     ``build_api_kwargs_extras``), a model the catalog / ``model_overrides`` mark
     ``supports_reasoning: false``, or a local Ollama model whose ``/api/show`` lacks ``thinking``.
     """
-    if getattr(agent, "api_mode", None) != "chat_completions":
+    if getattr(agent, "api_mode", None) != "chat_completions" or getattr(agent, "conversation_only", False):
         return None
-    provider = str(getattr(agent, "provider", "") or "")
+    provider =str(getattr(agent, "provider", "") or "")
     model = str(getattr(agent, "model", "") or "")
     try:
         from providers import get_provider_profile

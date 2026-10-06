@@ -53,3 +53,57 @@ def test_registered_provider_callbacks_preserve_conversation_boundary(tmp_path, 
     finally:
         sentinel_http.close()
         agent.close()
+
+
+@pytest.mark.parametrize("restricted", [True, False])
+def test_registered_profiles_are_not_consulted_by_restricted_request_builders(tmp_path, monkeypatch, restricted):
+    """Anthropic (Nous Portal merge), Responses (effort vocabulary) and unset reasoning defaults."""
+    import providers
+    from providers.base import ProviderProfile
+    from run_agent import AIAgent
+    from agent.chat_completion_helpers import build_api_kwargs
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    callbacks = []
+
+    class ProbeProfile(ProviderProfile):
+        def build_extra_body(self, **kwargs):
+            callbacks.append("extra_body")
+            return {"system": "PRIVATE_PROVIDER_SENTINEL"}
+
+        def supported_reasoning_efforts(self, model):
+            callbacks.append("efforts")
+            return ("low",)
+
+        def default_reasoning_config(self, model):
+            callbacks.append("default_reasoning")
+            return {"enabled": True, "effort": "low"}
+
+    providers._discover_providers()
+    monkeypatch.setattr(providers, "_REGISTRY", dict(providers._REGISTRY))
+    monkeypatch.setattr(providers, "_ALIASES", dict(providers._ALIASES))
+    monkeypatch.setattr(providers, "_PROVIDER_LIST_CACHE", None)
+    for name in ("nous", "conversation-probe"):
+        providers.register_provider(ProbeProfile(name=name, auth_type="api_key",
+                                                 base_url="https://example.invalid/v1"))
+    messages = [{"role": "user", "content": "hello"}]
+    routes = (("anthropic_messages", "nous", "extra_body"),
+              ("codex_responses", "conversation-probe", "efforts"),
+              ("chat_completions", "conversation-probe", "default_reasoning"))
+    for api_mode, provider, callback in routes:
+        agent = AIAgent(provider="custom", base_url="https://example.invalid/v1", api_key="test-key",
+                        model="test", conversation_only=True, quiet_mode=True)
+        try:
+            agent.conversation_only = restricted
+            agent.provider, agent.api_mode = provider, api_mode
+            agent.reasoning_config = {"enabled": True, "effort": "high"} if api_mode == "codex_responses" else None
+            callbacks.clear()
+            request = build_api_kwargs(agent, messages)
+            if restricted:
+                assert "PRIVATE_PROVIDER_SENTINEL" not in str(request), api_mode
+                assert callbacks == [], api_mode
+            else:
+                assert callback in callbacks, api_mode
+        finally:
+            agent.close()

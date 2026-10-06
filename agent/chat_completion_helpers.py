@@ -478,7 +478,7 @@ def _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs: dict) -> dic
     """Merge Portal ``tags`` / ``session_id`` onto an Anthropic Messages kwargs dict.
     The Nous profile is only consulted by the OpenAI-wire transport; ``session_id``
     only — never ``provider_preferences`` (an OpenAI-wire routing object)."""
-    if getattr(agent, "provider", None) not in {"nous", "nous-portal", "nousresearch"}:
+    if getattr(agent, "conversation_only", False) or getattr(agent, "provider", None) not in {"nous", "nous-portal", "nousresearch"}:
         return anthropic_kwargs
     try:
         from providers import get_provider_profile
@@ -1399,7 +1399,8 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
         is_codex_backend=is_codex_backend, is_xai_responses=is_xai_responses,
         github_reasoning_extra=agent._github_models_reasoning_extra_body() if is_github_responses else None,
         replay_encrypted_reasoning=bool(getattr(agent, "_codex_reasoning_replay_enabled", True)),
-        context_management=context_management, text_verbosity=getattr(agent, "text_verbosity", None))
+        context_management=context_management, text_verbosity=getattr(agent, "text_verbosity", None),
+        conversation_only=bool(getattr(agent, "conversation_only", False)))
 
 
 
