@@ -86,6 +86,14 @@ def validate_tool_calls(
 
     # Uniquify duplicate tool-call ids BEFORE any downstream consumer: the
     # pre-API sanitizer keeps only the first call/result per id.
+    if getattr(agent, "conversation_only", False):
+        agent._uniquify_tool_call_ids(tool_calls)
+        append_message(messages, agent._build_assistant_message(assistant_message, finish_reason))
+        _append_tool_error_results(
+            messages, tool_calls,
+            lambda _tc: "Tool execution is disabled for this conversation.",
+        )
+        return ToolValidationVerdict(action="continue", result=None, mixed_invalid_batch=False)
     agent._uniquify_tool_call_ids(tool_calls)
 
     # Repair mismatched tool names before validating (model hallucinations).

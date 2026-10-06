@@ -1440,7 +1440,8 @@ def classify_codex_soft_failure(agent: Any, response: Any) -> Tuple[Any, Dict[st
         return None, {}
     exc = _CodexSoftFailure(_codex_soft_failure_error(response))
     classified = classify_api_error(
-        exc, provider=getattr(agent, "provider", "") or "", model=getattr(agent, "model", "") or "",
+        exc, conversation_only=bool(getattr(agent, "conversation_only", False)),
+        provider=getattr(agent, "provider", "") or "", model=getattr(agent, "model", "") or "",
         base_url=str(getattr(agent, "base_url", "") or ""), api_key=getattr(agent, "api_key", None),
     )
     return classified, agent._extract_api_error_context(exc)
@@ -1643,7 +1644,8 @@ def activate_codex_app_server_fallback(agent: Any, result: Dict[str, Any]) -> bo
     if not error or result.get("interrupted") or not agent._has_pending_fallback():
         return False
     classified = classify_api_error(
-        RuntimeError(str(error)), provider=getattr(agent, "provider", "") or "", model=getattr(agent, "model", "") or "",
+        RuntimeError(str(error)), conversation_only=bool(getattr(agent, "conversation_only", False)),
+        provider=getattr(agent, "provider", "") or "", model=getattr(agent, "model", "") or "",
     )
     if classified.reason not in _RATE_LIMIT_REASONS:
         return False

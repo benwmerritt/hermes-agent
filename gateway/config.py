@@ -43,6 +43,31 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     return is_truthy_value(value, default=default)
 
 
+def is_conversation_only_peer(config, source) -> bool:
+    """Policy for the authenticated adapter identity, never message metadata."""
+    platform = getattr(source, "platform", "")
+    if getattr(platform, "value", platform) != "a2a":
+        return False
+    peers = getattr(config, "a2a_conversation_only_peers", None)
+    if not isinstance(peers, list) or any(not isinstance(peer, str) or not peer.strip() for peer in peers):
+        return True
+    peer = getattr(source, "user_id", None)
+    return "*" in peers or not isinstance(peer, str) or not peer or peer in peers
+
+
+def _normalize_a2a_conversation_only_peers(value: Any) -> List[str]:
+    """Normalize exact authenticated peer ids; malformed values fail closed."""
+    if not isinstance(value, list):
+        if value is not None:
+            logger.warning("Invalid gateway.a2a_conversation_only_peers (expected a list); restricting all A2A peers")
+            return ["*"]
+        return []
+    if any(not isinstance(entry, str) or not entry.strip() for entry in value):
+        logger.warning("Invalid gateway.a2a_conversation_only_peers entry; restricting all A2A peers")
+        return ["*"]
+    return list(dict.fromkeys(entry.strip() for entry in value))
+
+
 def _env_multiplex_profiles_override() -> "bool | None":
     """GATEWAY_MULTIPLEX_PROFILES operator override: True/False for a recognized token.
 
@@ -605,6 +630,8 @@ class GatewayConfig:
     # An explicit value (config.yaml, GATEWAY_MULTIPLEX_PROFILES, a constructor argument) is honoured
     # verbatim. Every reader tests truthiness, so an unresolved ``None`` never multiplexes by accident.
     multiplex_profiles: Optional[bool] = None
+    # Exact authenticated A2A peer ids whose sessions expose conversation only.
+    a2a_conversation_only_peers: List[str] = field(default_factory=list)
     # Public HTTPS endpoint for scoped RoomLink calls (an API key alone must never advertise a
     # route); HERMES_ROOM_LINK_URL overrides.
     room_link_url: Optional[str] = None
@@ -635,6 +662,7 @@ class GatewayConfig:
         "write_sessions_json", "always_log_local", "filter_silence_narration", "stt_enabled",
         "stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user",
         "max_concurrent_sessions", "multiplex_profiles",
+        "a2a_conversation_only_peers",
         "room_link_url", "systemd_watchdog_seconds", "loop_watchdog",
         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
         "loop_watchdog_max_strikes", "unauthorized_dm_behavior", "unauthorized_dm_decline_message",
@@ -779,6 +807,9 @@ class GatewayConfig:
             stt_enabled=_coerce_bool(stt_setting("stt_enabled", "enabled"), True),
             stt_echo_transcripts=_coerce_bool(stt_setting("stt_echo_transcripts", "echo_transcripts"), True),
             multiplex_profiles=None if multiplex_profiles is None else _coerce_bool(multiplex_profiles, True),
+            a2a_conversation_only_peers=_normalize_a2a_conversation_only_peers(
+                pick("a2a_conversation_only_peers")
+            ),
             room_link_url=room_link_url if isinstance(room_link_url, str) else None,
             systemd_watchdog_seconds=systemd_watchdog_seconds,
             loop_watchdog=_coerce_bool(pick("loop_watchdog"), True),

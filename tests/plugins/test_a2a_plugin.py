@@ -691,14 +691,14 @@ class TestReplyCapture:
 class TestTaskRpcHandlers:
     def test_tasks_get_unknown_uses_spec_error_code(self):
         adapter = _bare_adapter()
-        resp = adapter._rpc_tasks_get(1, {"taskId": "ghost"})
+        resp = adapter._rpc_tasks_get(1, {"taskId": "ghost"}, peer="peer")
         assert resp["error"]["code"] == protocol.ERR_TASK_NOT_FOUND
 
     def test_tasks_get_returns_completed_task(self):
         adapter = _bare_adapter()
-        adapter.tasks.create("task-done", "ctx-d", "peer")
+        adapter.tasks.create("task-done", "ctx-d", "peer", policy_mode=adapter._policy_mode("peer"))
         adapter.tasks.complete("task-done", protocol.STATE_COMPLETED, "answer")
-        resp = adapter._rpc_tasks_get(1, {"taskId": "task-done"})
+        resp = adapter._rpc_tasks_get(1, {"taskId": "task-done"}, peer="peer")
         task = resp["result"]
         assert task["status"]["state"] == "TASK_STATE_COMPLETED"
         assert protocol.extract_text(task["artifacts"][0]) == "answer"
@@ -707,59 +707,60 @@ class TestTaskRpcHandlers:
         """Cancel must reset anti-loop turns for the task's CONTEXT (the old
         code passed the task_id into a context-keyed map — silent no-op)."""
         adapter = _bare_adapter()
+        history_context = adapter._history_context_id("peer", "ctx-loopy")
         for _ in range(4):
-            adapter._turns.track("ctx-loopy")
-        adapter.tasks.create("task-c", "ctx-loopy", "peer")
-        resp = adapter._rpc_tasks_cancel(1, {"taskId": "task-c"})
+            adapter._turns.track(history_context)
+        adapter.tasks.create("task-c", "ctx-loopy", "peer", policy_mode=adapter._policy_mode("peer"))
+        resp = adapter._rpc_tasks_cancel(1, {"taskId": "task-c"}, peer="peer")
         assert resp["result"]["status"]["state"] == "TASK_STATE_CANCELED"
         # Turn counter went back to zero: next track() is turn 1.
-        assert adapter._turns.track("ctx-loopy") == 1
+        assert adapter._turns.track(history_context) == 1
 
     def test_cancel_terminal_task_not_cancelable(self):
         adapter = _bare_adapter()
-        adapter.tasks.create("task-t", "ctx-t", "peer")
+        adapter.tasks.create("task-t", "ctx-t", "peer", policy_mode=adapter._policy_mode("peer"))
         adapter.tasks.complete("task-t", protocol.STATE_COMPLETED, "done")
-        resp = adapter._rpc_tasks_cancel(1, {"taskId": "task-t"})
+        resp = adapter._rpc_tasks_cancel(1, {"taskId": "task-t"}, peer="peer")
         assert resp["error"]["code"] == protocol.ERR_TASK_NOT_CANCELABLE
 
     def test_cancel_unknown_task(self):
         adapter = _bare_adapter()
-        resp = adapter._rpc_tasks_cancel(1, {"taskId": "ghost"})
+        resp = adapter._rpc_tasks_cancel(1, {"taskId": "ghost"}, peer="peer")
         assert resp["error"]["code"] == protocol.ERR_TASK_NOT_FOUND
 
     def test_tasks_list_filters_by_context(self):
         adapter = _bare_adapter()
-        adapter.tasks.create("t1", "ctx-a", "p")
-        adapter.tasks.create("t2", "ctx-b", "p")
+        adapter.tasks.create("t1", "ctx-a", "p", policy_mode=adapter._policy_mode("p"))
+        adapter.tasks.create("t2", "ctx-b", "p", policy_mode=adapter._policy_mode("p"))
         adapter.tasks.complete("t1", protocol.STATE_COMPLETED, "x")
-        resp = adapter._rpc_tasks_list(1, {"contextId": "ctx-a"})
+        resp = adapter._rpc_tasks_list(1, {"contextId": "ctx-a"}, peer="p")
         tasks = resp["result"]["tasks"]
         assert [t["id"] for t in tasks] == ["t1"]
 
     def test_tasks_list_filters_by_status_and_paginates(self):
         adapter = _bare_adapter()
         for i in range(5):
-            adapter.tasks.create(f"tl-{i}", "ctx-l", "p")
+            adapter.tasks.create(f"tl-{i}", "ctx-l", "p", policy_mode=adapter._policy_mode("p"))
             adapter.tasks.complete(f"tl-{i}", protocol.STATE_COMPLETED, "x")
         resp = adapter._rpc_tasks_list(1, {
-            "contextId": "ctx-l", "status": "TASK_STATE_COMPLETED", "pageSize": 2})
+            "contextId": "ctx-l", "status": "TASK_STATE_COMPLETED", "pageSize": 2}, peer="p")
         result = resp["result"]
         assert len(result["tasks"]) == 2
         assert result["nextPageToken"] == "2"
         resp2 = adapter._rpc_tasks_list(1, {
             "contextId": "ctx-l", "status": "TASK_STATE_COMPLETED",
-            "pageSize": 2, "pageToken": result["nextPageToken"]})
+            "pageSize": 2, "pageToken": result["nextPageToken"]}, peer="p")
         assert len(resp2["result"]["tasks"]) == 2
         ids = {t["id"] for t in result["tasks"]} | {t["id"] for t in resp2["result"]["tasks"]}
         assert len(ids) == 4  # no overlap between pages
 
     def test_push_config_create_returns_config_id(self):
         adapter = _bare_adapter()
-        adapter.tasks.create("task-p", "ctx-p", "peer")
+        adapter.tasks.create("task-p", "ctx-p", "peer", policy_mode=adapter._policy_mode("peer"))
         resp = adapter._rpc_push_config_create(1, {
             "taskId": "task-p",
             "pushNotificationConfig": {"url": "https://example.com/hook"},
-        })
+        }, peer="peer")
         cfg = resp["result"]
         assert cfg["configId"].startswith("cfg-")
         assert cfg["createdAt"]
@@ -768,23 +769,23 @@ class TestTaskRpcHandlers:
     def test_push_config_create_unknown_task(self):
         adapter = _bare_adapter()
         resp = adapter._rpc_push_config_create(1, {
-            "taskId": "ghost", "pushNotificationConfig": {"url": "https://x/h"}})
+            "taskId": "ghost", "pushNotificationConfig": {"url": "https://x/h"}}, peer="peer")
         assert resp["error"]["code"] == protocol.ERR_TASK_NOT_FOUND
 
     def test_push_config_create_requires_url(self):
         adapter = _bare_adapter()
-        resp = adapter._rpc_push_config_create(1, {"taskId": "t"})
+        resp = adapter._rpc_push_config_create(1, {"taskId": "t"}, peer="peer")
         assert resp["error"]["code"] == protocol.ERR_INVALID_PARAMS
 
     def test_push_config_get_returns_stored_config(self):
         """GetTaskPushNotificationConfig retrieves a config after create."""
         adapter = _bare_adapter()
-        adapter.tasks.create("task-g", "ctx-g", "peer")
+        adapter.tasks.create("task-g", "ctx-g", "peer", policy_mode=adapter._policy_mode("peer"))
         adapter._rpc_push_config_create(1, {
             "taskId": "task-g",
             "pushNotificationConfig": {"url": "https://example.com/hook"},
-        })
-        resp = adapter._rpc_push_config_get(1, {"taskId": "task-g"})
+        }, peer="peer")
+        resp = adapter._rpc_push_config_get(1, {"taskId": "task-g"}, peer="peer")
         cfg = resp["result"]
         assert cfg["pushNotificationConfig"]["url"] == "https://example.com/hook"
         assert cfg["configId"].startswith("cfg-")
@@ -792,47 +793,47 @@ class TestTaskRpcHandlers:
     def test_push_config_get_by_config_id(self):
         """Get with a specific configId returns the matching config."""
         adapter = _bare_adapter()
-        adapter.tasks.create("task-g2", "ctx-g2", "peer")
+        adapter.tasks.create("task-g2", "ctx-g2", "peer", policy_mode=adapter._policy_mode("peer"))
         create_resp = adapter._rpc_push_config_create(1, {
             "taskId": "task-g2",
             "pushNotificationConfig": {"url": "https://example.com/hook"},
-        })
+        }, peer="peer")
         config_id = create_resp["result"]["configId"]
-        resp = adapter._rpc_push_config_get(1, {"taskId": "task-g2", "id": config_id})
+        resp = adapter._rpc_push_config_get(1, {"taskId": "task-g2", "id": config_id}, peer="peer")
         assert resp["result"]["configId"] == config_id
 
     def test_push_config_get_wrong_config_id_returns_error(self):
         """Get with wrong configId returns not-found error."""
         adapter = _bare_adapter()
-        adapter.tasks.create("task-g3", "ctx-g3", "peer")
+        adapter.tasks.create("task-g3", "ctx-g3", "peer", policy_mode=adapter._policy_mode("peer"))
         adapter._rpc_push_config_create(1, {
             "taskId": "task-g3",
             "pushNotificationConfig": {"url": "https://example.com/hook"},
-        })
-        resp = adapter._rpc_push_config_get(1, {"taskId": "task-g3", "id": "cfg-wrong"})
+        }, peer="peer")
+        resp = adapter._rpc_push_config_get(1, {"taskId": "task-g3", "id": "cfg-wrong"}, peer="peer")
         assert resp["error"]["code"] == protocol.ERR_TASK_NOT_FOUND
 
     def test_push_config_get_unknown_task(self):
         """Get for non-existent task returns not-found."""
         adapter = _bare_adapter()
-        resp = adapter._rpc_push_config_get(1, {"taskId": "ghost"})
+        resp = adapter._rpc_push_config_get(1, {"taskId": "ghost"}, peer="peer")
         assert resp["error"]["code"] == protocol.ERR_TASK_NOT_FOUND
 
     def test_push_config_get_requires_task_id(self):
         """Get without taskId returns invalid-params."""
         adapter = _bare_adapter()
-        resp = adapter._rpc_push_config_get(1, {})
+        resp = adapter._rpc_push_config_get(1, {}, peer="peer")
         assert resp["error"]["code"] == protocol.ERR_INVALID_PARAMS
 
     def test_push_config_list_returns_configs(self):
         """ListTaskPushNotificationConfigs returns all configs for a task."""
         adapter = _bare_adapter()
-        adapter.tasks.create("task-l", "ctx-l", "peer")
+        adapter.tasks.create("task-l", "ctx-l", "peer", policy_mode=adapter._policy_mode("peer"))
         adapter._rpc_push_config_create(1, {
             "taskId": "task-l",
             "pushNotificationConfig": {"url": "https://example.com/hook"},
-        })
-        resp = adapter._rpc_push_config_list(1, {"taskId": "task-l"})
+        }, peer="peer")
+        resp = adapter._rpc_push_config_list(1, {"taskId": "task-l"}, peer="peer")
         configs = resp["result"]["configs"]
         assert len(configs) == 1
         assert configs[0]["pushNotificationConfig"]["url"] == "https://example.com/hook"
@@ -840,52 +841,52 @@ class TestTaskRpcHandlers:
     def test_push_config_list_empty_for_task_without_config(self):
         """List returns empty array for a task with no push config."""
         adapter = _bare_adapter()
-        adapter.tasks.create("task-l2", "ctx-l2", "peer")
-        resp = adapter._rpc_push_config_list(1, {"taskId": "task-l2"})
+        adapter.tasks.create("task-l2", "ctx-l2", "peer", policy_mode=adapter._policy_mode("peer"))
+        resp = adapter._rpc_push_config_list(1, {"taskId": "task-l2"}, peer="peer")
         assert resp["result"]["configs"] == []
 
     def test_push_config_delete_removes_config(self):
         """DeleteTaskPushNotificationConfig removes the push config."""
         adapter = _bare_adapter()
-        adapter.tasks.create("task-d", "ctx-d", "peer")
+        adapter.tasks.create("task-d", "ctx-d", "peer", policy_mode=adapter._policy_mode("peer"))
         adapter._rpc_push_config_create(1, {
             "taskId": "task-d",
             "pushNotificationConfig": {"url": "https://example.com/hook"},
-        })
+        }, peer="peer")
         # Delete
-        resp = adapter._rpc_push_config_delete(1, {"taskId": "task-d"})
+        resp = adapter._rpc_push_config_delete(1, {"taskId": "task-d"}, peer="peer")
         assert resp["result"]["deleted"] is True
         # Get now fails
-        resp2 = adapter._rpc_push_config_get(1, {"taskId": "task-d"})
+        resp2 = adapter._rpc_push_config_get(1, {"taskId": "task-d"}, peer="peer")
         assert resp2["error"]["code"] == protocol.ERR_TASK_NOT_FOUND
 
     def test_push_config_delete_unknown_task(self):
         """Delete for non-existent task returns not-found."""
         adapter = _bare_adapter()
-        resp = adapter._rpc_push_config_delete(1, {"taskId": "ghost"})
+        resp = adapter._rpc_push_config_delete(1, {"taskId": "ghost"}, peer="peer")
         assert resp["error"]["code"] == protocol.ERR_TASK_NOT_FOUND
 
     def test_push_config_delete_by_config_id(self):
         """Delete with a specific configId only deletes the matching config."""
         adapter = _bare_adapter()
-        adapter.tasks.create("task-d2", "ctx-d2", "peer")
+        adapter.tasks.create("task-d2", "ctx-d2", "peer", policy_mode=adapter._policy_mode("peer"))
         create_resp = adapter._rpc_push_config_create(1, {
             "taskId": "task-d2",
             "pushNotificationConfig": {"url": "https://example.com/hook"},
-        })
+        }, peer="peer")
         config_id = create_resp["result"]["configId"]
-        resp = adapter._rpc_push_config_delete(1, {"taskId": "task-d2", "id": config_id})
+        resp = adapter._rpc_push_config_delete(1, {"taskId": "task-d2", "id": config_id}, peer="peer")
         assert resp["result"]["deleted"] is True
 
     def test_push_config_delete_wrong_config_id(self):
         """Delete with wrong configId returns not-found."""
         adapter = _bare_adapter()
-        adapter.tasks.create("task-d3", "ctx-d3", "peer")
+        adapter.tasks.create("task-d3", "ctx-d3", "peer", policy_mode=adapter._policy_mode("peer"))
         adapter._rpc_push_config_create(1, {
             "taskId": "task-d3",
             "pushNotificationConfig": {"url": "https://example.com/hook"},
-        })
-        resp = adapter._rpc_push_config_delete(1, {"taskId": "task-d3", "id": "cfg-wrong"})
+        }, peer="peer")
+        resp = adapter._rpc_push_config_delete(1, {"taskId": "task-d3", "id": "cfg-wrong"}, peer="peer")
         assert resp["error"]["code"] == protocol.ERR_TASK_NOT_FOUND
 
 
@@ -1539,12 +1540,12 @@ class TestV1SpecRegressionFixes:
         }))
         research = adapter._agents["research"]
         dev = adapter._agents["dev"]
-        adapter.tasks.create("task-r", "ctx-r", "peer", *adapter._scope_for_agent(research))
+        adapter.tasks.create("task-r", "ctx-r", "peer", *adapter._scope_for_agent(research), policy_mode=adapter._policy_mode("peer"))
         adapter.tasks.complete("task-r", protocol.STATE_COMPLETED, "secret")
-        assert adapter._rpc_tasks_get(1, {"id": "task-r", "tenant": "research"}, agent=research)["result"]["id"] == "task-r"
-        assert adapter._rpc_tasks_get(2, {"id": "task-r", "tenant": "dev"}, agent=dev)["error"]["code"] == protocol.ERR_TASK_NOT_FOUND
-        assert adapter._rpc_tasks_cancel(3, {"id": "task-r", "tenant": "dev"}, agent=dev)["error"]["code"] == protocol.ERR_TASK_NOT_FOUND
-        list_resp = adapter._rpc_tasks_list(4, {"tenant": "dev"}, agent=dev)
+        assert adapter._rpc_tasks_get(1, {"id": "task-r", "tenant": "research"}, agent=research, peer="peer")["result"]["id"] == "task-r"
+        assert adapter._rpc_tasks_get(2, {"id": "task-r", "tenant": "dev"}, agent=dev, peer="peer")["error"]["code"] == protocol.ERR_TASK_NOT_FOUND
+        assert adapter._rpc_tasks_cancel(3, {"id": "task-r", "tenant": "dev"}, agent=dev, peer="peer")["error"]["code"] == protocol.ERR_TASK_NOT_FOUND
+        list_resp = adapter._rpc_tasks_list(4, {"tenant": "dev"}, agent=dev, peer="peer")
         assert list_resp["result"]["tasks"] == []
 
     def test_push_config_is_tenant_scoped(self):
@@ -1559,13 +1560,13 @@ class TestV1SpecRegressionFixes:
         }))
         research = adapter._agents["research"]
         dev = adapter._agents["dev"]
-        adapter.tasks.create("task-r", "ctx-r", "peer", *adapter._scope_for_agent(research))
+        adapter.tasks.create("task-r", "ctx-r", "peer", *adapter._scope_for_agent(research), policy_mode=adapter._policy_mode("peer"))
         ok = adapter._rpc_push_config_create(1, {
             "taskId": "task-r", "tenant": "research",
             "pushNotificationConfig": {"url": "https://example.com/hook"},
-        }, agent=research)
+        }, agent=research, peer="peer")
         assert ok["result"]["configId"].startswith("cfg-")
-        hidden = adapter._rpc_push_config_get(2, {"taskId": "task-r", "tenant": "dev"}, agent=dev)
+        hidden = adapter._rpc_push_config_get(2, {"taskId": "task-r", "tenant": "dev"}, agent=dev, peer="peer")
         assert hidden["error"]["code"] == protocol.ERR_TASK_NOT_FOUND
 
     def test_malformed_params_returns_jsonrpc_error_not_500(self, monkeypatch):
@@ -1615,7 +1616,7 @@ class TestV1SpecRegressionFixes:
 
     def test_forward_to_profile_first_contact_creates_then_resumes_fake_hermes(self, monkeypatch, tmp_path):
         from plugins.platforms.a2a.adapter import A2AAdapter
-        from gateway.config import PlatformConfig
+        from gateway.config import GatewayConfig, PlatformConfig
 
         profile_home = tmp_path / "profile"
         profile_home.mkdir()
@@ -1649,6 +1650,7 @@ print('fake reply')
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
             "agents": {"dev": {"profile": "dev", "tenant": "dev", "timeout": 5}}
         }))
+        adapter.set_session_store(SimpleNamespace(config=GatewayConfig.from_dict({})))
         agent = adapter._agents["dev"]
         reply, state = adapter._forward_to_profile(agent, "peer", "ctx/unsafe value", "hello")
         assert (reply, state) == ("fake reply", protocol.STATE_COMPLETED)
@@ -1660,7 +1662,8 @@ print('fake reply')
         con = sqlite3.connect(db)
         title = con.execute("SELECT title FROM sessions WHERE id='sess-1'").fetchone()[0]
         con.close()
-        assert title == "a2a-dev-ctx-unsafe-value"
+        encoded_identity = title.removeprefix("a2a-v2-unrestricted-")
+        assert json.loads(bytes.fromhex(encoded_identity)) == ["peer", agent["slug"], "ctx/unsafe value"]
 
 
 # --------------------------------------------------------------------------

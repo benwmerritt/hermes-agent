@@ -166,6 +166,11 @@ def hygiene_no_commit_reason(agent) -> str:
 class GatewayTurnMixin:
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
+    def _is_conversation_only_peer(self, source) -> bool:
+        """A2A boundary keyed only by the adapter's authenticated source.user_id."""
+        from gateway.config import is_conversation_only_peer
+        return is_conversation_only_peer(getattr(self, "config", None), source)
+
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
         user_config: Optional[dict] = None,
@@ -511,7 +516,7 @@ class GatewayTurnMixin:
         if _is_fresh_reset:
             # See #6508.
             session_entry.is_fresh_reset = False
-        if _is_new_session:
+        if _is_new_session and not self._is_conversation_only_peer(source):
             await self.hooks.emit("session:start", {
                 "platform": source.platform.value if source.platform else "",
                 "user_id": source.user_id,
@@ -1332,7 +1337,7 @@ class GatewayTurnMixin:
         histories don't cause repeated truncation/context failures. Token source: the API's
         prompt_tokens from the last turn, else a char/4 estimate."""
         from gateway.run import HygieneTurnHoldExceeded
-        if not history or len(history) < 4:
+        if self._is_conversation_only_peer(source) or not history or len(history) < 4:
             return history
 
         hs = await self._hmwa_hygiene_settings(source, session_key)
@@ -2158,7 +2163,8 @@ class GatewayTurnMixin:
                 "session_id": session_entry.session_id,
                 "message": message_text[:500],
             }
-            await self.hooks.emit("agent:start", hook_ctx)
+            if not self._is_conversation_only_peer(source):
+                await self.hooks.emit("agent:start", hook_ctx)
 
             # Capture the launch session id so post-run compression publication is identity-guarded
             # (a /new may move session_entry.session_id while the old run is still unwinding).
@@ -2215,7 +2221,8 @@ class GatewayTurnMixin:
             # Streaming already delivered the body: the footer goes out as a trailing send instead.
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
                 response = f"{response}\n\n{_footer_line}"
-            await self._hmwa_post_turn_hooks(hook_ctx, agent_result, response)
+            if not self._is_conversation_only_peer(source):
+                await self._hmwa_post_turn_hooks(hook_ctx, agent_result, response)
 
             agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure = (
                 self._hmwa_classify_turn_failure(agent_result, history, session_entry)
@@ -2410,6 +2417,8 @@ class GatewayTurnMixin:
                 except Exception as e:
                     logger.warning("Background task vision enrichment failed: %s", e)
 
+            # A conversation-only task is isolated just like a peer's ordinary turn.
+            _background_conversation_only = self._is_conversation_only_peer(source)
             def run_sync():
                 agent = AIAgent(
                     model=turn_route["model"],
@@ -2418,8 +2427,14 @@ class GatewayTurnMixin:
                     max_iterations=max_iterations,
                     quiet_mode=True,
                     verbose_logging=False,
-                    enabled_toolsets=enabled_toolsets,
-                    disabled_toolsets=disabled_toolsets,
+                    conversation_only=_background_conversation_only,
+                    skip_memory=_background_conversation_only,
+                    skip_context_files=_background_conversation_only,
+                    load_soul_identity=not _background_conversation_only,
+                    skip_background_review=_background_conversation_only,
+                    enabled_toolsets=[] if _background_conversation_only else enabled_toolsets,
+                    disabled_toolsets=[] if _background_conversation_only else (disabled_toolsets or []),
+                    ephemeral_system_prompt="",
                     reasoning_config=reasoning_config,
                     service_tier=self._service_tier,
                     request_overrides=turn_route.get("request_overrides"),

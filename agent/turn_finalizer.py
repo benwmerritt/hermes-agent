@@ -420,6 +420,8 @@ def _apply_output_hooks(
     (``apply_llm_output_transform`` from ``finish_text_response`` / ``_persist_step``); this
     call returns that recorded outcome, and only fires the hook here when no earlier seam saw a
     response (e.g. text that only appeared through ``_explain_abnormal_exit``)."""
+    if getattr(agent, "conversation_only", False):
+        return final_response, False, None
     final_response, transformed, pre_transform = apply_llm_output_transform(
         agent, final_response, turn_id=turn_id, platform=platform, logger=logger,
     )
@@ -454,6 +456,8 @@ def apply_llm_output_transform(
     same turn get the recorded outcome instead of a second hook firing. Only the current
     turn's not-yet-written text is touched — earlier turns and the system prompt are never
     rewritten (prompt-cache invariant)."""
+    if getattr(agent, "conversation_only", False):
+        return final_response, False, None
     if logger is None:
         from agent.conversation_loop import logger
     recorded = getattr(agent, "_llm_output_transform", None)
@@ -705,7 +709,7 @@ def finalize_turn(
 
     # Memory provider on_session_end()/shutdown_all() are NOT called here:
     # run_conversation() runs once per message; CLI/gateway own session-end cleanup.
-    if not getattr(agent, "_persist_disabled", False):
+    if not getattr(agent, "_persist_disabled", False) and not getattr(agent, "conversation_only", False):
         _invoke_hook_safely(
             "on_session_end", logger,
             session_id=agent.session_id,

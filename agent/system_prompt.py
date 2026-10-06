@@ -300,6 +300,8 @@ def _tool_guidance_block(agent: Any) -> Optional[str]:
 def _skills_prompt(agent: Any) -> str:
     """Skills index (empty without skills tools).  Focus mode demotes non-coding
     categories to names-only — never hidden, every name stays visible."""
+    if getattr(agent, "conversation_only", False):
+        return ""
     if not any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage']):
         return ""
     import model_tools
@@ -344,6 +346,8 @@ def _bot_mode_parts(agent: Any) -> List[str]:
     """Bot Mode teammate protocol — only in a bot's canonical "Bot Chat" session.
     Marks the prompt timeless (the volatile date line is dropped) since a birth
     date pinned in a months-long session is misinformation."""
+    if getattr(agent, "conversation_only", False):
+        return []
     parts: List[str] = []
     try:
         from tools.bot_mode_probe import BOT_CHAT_TITLE, epoch_line, get_bot_mode_protocol_section
@@ -515,6 +519,8 @@ def _memory_parts(agent: Any) -> List[str]:
     """Built-in memory/USER.md blocks plus the external provider block (gated on
     the same check ``inject_memory_provider_tools`` uses, so we never advertise
     tools the toolset config gated off)."""
+    if getattr(agent, "conversation_only", False):
+        return []
     parts: List[str] = []
     if agent._memory_store:
         for enabled, kind in ((agent._memory_enabled, "memory"), (agent._user_profile_enabled, "user")):
@@ -540,9 +546,9 @@ def _memory_parts(agent: Any) -> List[str]:
 
 
 def _identity_parts(agent: Any, ctx_len: Optional[int]) -> Tuple[List[str], bool]:
-    """SOUL.md (primary identity; cron keeps the persona while skipping cwd
-    instructions, scoped to the agent's OWN home) or the default identity.
-    Returns ``(parts, soul_loaded)``."""
+    """Return identity blocks without loading files in restricted sessions."""
+    if getattr(agent, "conversation_only", False):
+        return (["You are Wallace, a helpful conversational assistant."], False)
     wants_soul = agent.load_soul_identity or not agent.skip_context_files
     _soul_content = _pb.load_soul_md(ctx_len, home_override=_agent_home(agent)) if wants_soul else None
     return ([_soul_content], True) if _soul_content else ([DEFAULT_AGENT_IDENTITY], False)
@@ -664,6 +670,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     timestamp line, runtime environment hints).  Worktree-dependent blocks follow project context so a
     shared context file can remain in the longest common prefix across worktrees.
     Never re-rendered mid-session."""
+    if getattr(agent, "conversation_only", False):
+        return {"stable": "You are Wallace, a helpful conversational assistant.", "context": "", "volatile": ""}
+    # Session reuse still consults storage in run_conversation; this early branch prevents history prompt restore.
     # Model context window scales the context-file caps; stable per conversation.
     _cc_len = getattr(getattr(agent, "context_compressor", None), "context_length", None)
     _ctx_len = _cc_len if isinstance(_cc_len, int) and _cc_len > 0 else None
@@ -732,19 +741,13 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
 
 
 def invalidate_system_prompt(agent: Any) -> None:
-    """Force a rebuild on the next turn (after compression): reload memory from
-    disk and clear the frozen plugin snapshot (previous bytes stashed as the
-    fail-open fallback) so plugins re-render at the same boundary.
-
-    Called after context compression events. Also reloads memory from disk so the rebuilt prompt captures
-    any writes from this session, and clears the frozen plugin-section snapshot so plugins re-render at the
-    same boundary (maintainer-directed, #95681 arc): a plugin section is just another prompt block carrying
-    state — freezing it while memory, skills, and guidance refresh would recreate the stale-block disease
-    inside plugin-land. The previous bytes are stashed so a plugin whose render RAISES falls back to its
-    last good section instead of vanishing (fail-open guard, not a freeze).
-    """
+    """Force a rebuild on the next turn; conversation-only prompts are static."""
     agent._cached_system_prompt = None
     agent._cached_system_prompt_static = None
+    if getattr(agent, "conversation_only", False):
+        agent._cached_system_prompt = "You are Wallace, a helpful conversational assistant."
+        agent._cached_system_prompt_static = agent._cached_system_prompt
+        return
     if hasattr(agent, "_plugin_system_prompt_sections_snapshot"):
         agent._plugin_system_prompt_sections_previous = agent._plugin_system_prompt_sections_snapshot
         del agent._plugin_system_prompt_sections_snapshot
