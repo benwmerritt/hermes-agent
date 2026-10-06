@@ -48,7 +48,8 @@ class GatewayTurnMixin:
 
     def _is_conversation_only_peer(self, source) -> bool:
         """A2A boundary keyed only by the adapter's authenticated source.user_id."""
-        if str(getattr(source, "platform", "") or "").lower() != "a2a":
+        platform = getattr(source, "platform", "")
+        if getattr(platform, "value", platform) != "a2a":
             return False
         peers = getattr(getattr(self, "config", None), "a2a_conversation_only_peers", None)
         if not isinstance(peers, list) or any(not isinstance(peer, str) or not peer.strip() for peer in peers):

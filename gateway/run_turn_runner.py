@@ -1004,12 +1004,7 @@ class TurnRunner:
 
     def _conversation_only_peer(self, source) -> bool:
         """A2A restrictions use only authenticated source.user_id, never message metadata."""
-        if str(getattr(source, "platform", "") or "").lower() != "a2a":
-            return False
-        peers = getattr(self._ctx.user_config, "a2a_conversation_only_peers", None)
-        if not isinstance(peers, list) or any(not isinstance(peer, str) or not peer.strip() for peer in peers):
-            return True
-        return "*" in peers or not isinstance(getattr(source, "user_id", None), str) or source.user_id in peers
+        return self._runner._is_conversation_only_peer(source)
 
     def _build_fresh_agent(self, turn_route, platform_key, combined_ephemeral, max_iterations,
                            reasoning_config, pr, skip_context_files):

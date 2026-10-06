@@ -75,3 +75,46 @@ def test_agent_cache_signature_separates_conversation_only_mode():
     unrestricted = GatewayAgentCacheMixin._agent_config_signature(*args, conversation_only=False)
     restricted = GatewayAgentCacheMixin._agent_config_signature(*args, conversation_only=True)
     assert unrestricted != restricted
+
+
+@pytest.mark.parametrize("peer,restricted", [("alfred", True), ("gromit", False)])
+def test_real_platform_and_turn_runner_use_configured_peer(peer, restricted):
+    from gateway.config import GatewayConfig, Platform
+    from gateway.run_turn import GatewayTurnMixin
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.turn_context import TurnContext
+
+    runner = object.__new__(GatewayTurnMixin)
+    runner.config = GatewayConfig.from_dict({"gateway": {"a2a_conversation_only_peers": ["alfred"]}})
+    source = SimpleNamespace(platform=Platform("a2a"), user_id=peer)
+    turn = TurnRunner(runner, TurnContext(source=source, user_config={"gateway": {}}))
+    assert runner._is_conversation_only_peer(source) is restricted
+    assert turn._conversation_only_peer(source) is restricted
+    source.platform = Platform.DISCORD
+    assert not turn._conversation_only_peer(source)
+
+
+@pytest.mark.parametrize("restricted", [False, True])
+def test_real_agent_constructor_preserves_normal_context_and_isolates_peer(tmp_path, monkeypatch, restricted):
+    from run_agent import AIAgent
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "AGENTS.md").write_text("LOCAL_CONTEXT_SENTINEL")
+    agent = AIAgent(
+        provider="custom", base_url="https://example.invalid/v1", api_key="test-key",
+        model="test-model", quiet_mode=True, enabled_toolsets=[],
+        conversation_only=restricted, skip_memory=True,
+        skip_context_files=False, load_soul_identity=True,
+        prefill_messages=[{"role": "user", "content": "PREFILL_SENTINEL"}],
+    )
+    assert agent.skip_context_files is restricted
+    assert agent.load_soul_identity is (not restricted)
+    prompt = agent._build_system_prompt(None)
+    assert ("LOCAL_CONTEXT_SENTINEL" in prompt) is (not restricted)
+    if restricted:
+        assert agent.tools == []
+        assert agent.valid_tool_names == set()
+        assert agent._memory_store is None
+        assert agent._memory_manager is None
+        assert not agent.prefill_messages
+        assert agent.skip_background_review

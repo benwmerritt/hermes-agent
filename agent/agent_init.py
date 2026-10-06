@@ -2294,8 +2294,8 @@ def init_agent(
         agent._soul_prompt_override = ""
         agent._execution_guidance = False
         agent._tool_use_enforcement = False
-    agent.load_soul_identity = False
-    agent.skip_context_files = True
+        agent.load_soul_identity = False
+        agent.skip_context_files = True
     agent.log_prefix = f"{log_prefix} " if log_prefix else ""
     # Effective base URL for feature detection (prompt caching, reasoning, etc.)
     agent.base_url = base_url or ""
@@ -2330,7 +2330,7 @@ def init_agent(
     else:
         agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
     agent.request_overrides = dict(request_overrides or {})
-    agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
+    agent.prefill_messages = [] if conversation_only else (prefill_messages or [])
     agent._force_ascii_payload = False
 
     _init_prompt_cache_config(agent)
