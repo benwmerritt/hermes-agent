@@ -2360,6 +2360,9 @@ def init_agent(
         agent._memory_manager = None
         agent._memory_enabled = False
         agent._user_profile_enabled = False
+        agent._memory_nudge_interval = 0
+        agent._turns_since_memory = 0
+        agent._iters_since_skill = 0
         agent._memory_write_origin = None
         agent._memory_write_context = None
     else:

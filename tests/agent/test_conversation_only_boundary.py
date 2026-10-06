@@ -118,3 +118,83 @@ def test_real_agent_constructor_preserves_normal_context_and_isolates_peer(tmp_p
         assert agent._memory_manager is None
         assert not agent.prefill_messages
         assert agent.skip_background_review
+
+
+def test_real_conversation_loop_denies_provider_tool_call(tmp_path, monkeypatch):
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from run_agent import AIAgent
+
+    captured = []
+    marker = tmp_path / "must-not-exist"
+    responses = [
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "forged", "type": "function", "function": {
+                "name": "terminal", "arguments": json.dumps({"command": f"touch {marker}"}),
+            }},
+        ]},
+        {"role": "assistant", "content": "Hello Alfred."},
+    ]
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            if not self.path.endswith("/chat/completions"):
+                self.send_error(404)
+                return
+            captured.append(request)
+            message = responses.pop(0) if responses else {"role": "assistant", "content": "Hello Alfred."}
+            if request.get("stream"):
+                delta = dict(message)
+                for index, call in enumerate(delta.get("tool_calls", [])):
+                    call["index"] = index
+                chunks = [
+                    {"id": "test", "choices": [{"index": 0, "delta": delta, "finish_reason": None}]},
+                    {"id": "test", "choices": [{"index": 0, "delta": {},
+                    "finish_reason": "tool_calls" if message.get("tool_calls") else "stop"}]},
+                ]
+                body = ("".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks) + "data: [DONE]\n\n").encode()
+                content_type = "text/event-stream"
+            else:
+                body = json.dumps({
+                    "id": "test", "choices": [{"index": 0, "message": message,
+                    "finish_reason": "tool_calls" if message.get("tool_calls") else "stop"}],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
+                }).encode()
+                content_type = "application/json"
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "AGENTS.md").write_text("PRIVATE_FILE_SENTINEL")
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        agent = AIAgent(
+            provider="custom", base_url=f"http://127.0.0.1:{server.server_port}/v1",
+            api_key="test-key", model="test-model", quiet_mode=True,
+            conversation_only=True, max_iterations=3, save_trajectories=False,
+        )
+        agent._invoke_tool = Mock(side_effect=AssertionError("executor must not run"))
+        result = agent.run_conversation("Hello Wallace.", system_message="PRIVATE_PROMPT_SENTINEL")
+        assert result["final_response"] == "Hello Alfred."
+        agent._invoke_tool.assert_not_called()
+        assert not marker.exists()
+        assert len(captured) >= 2
+        assert all(not request.get("tools") for request in captured)
+        assert "PRIVATE_FILE_SENTINEL" not in json.dumps(captured)
+        assert "PRIVATE_PROMPT_SENTINEL" not in json.dumps(captured)
+        assert any(message.get("role") == "tool" and "disabled" in message.get("content", "").lower()
+                   for request in captured for message in request.get("messages", []))
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
