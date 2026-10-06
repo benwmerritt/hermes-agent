@@ -24,17 +24,19 @@ def test_conversation_only_agent_has_safe_prompt_and_denies_fabricated_tools(tmp
     assert "MEMORY_SENTINEL" not in str(prompt)
     assert "SKILLS_SENTINEL" not in str(prompt)
     assert "SOUL_SENTINEL" not in str(prompt)
-    result = invoke_tool(agent, "terminal", {"command": "id"}, "task")
-    assert "disabled" in result.lower()
+    for tool_name in ("terminal", "read_file", "recall", "retain"):
+        result = invoke_tool(agent, tool_name, {"command": "id"}, "task")
+        assert "disabled" in result.lower()
     executor.assert_not_called()
 
 
 @pytest.mark.parametrize("dispatch", ["sequential", "concurrent"])
-def test_conversation_only_rejects_fabricated_tool_calls_before_dispatch(dispatch):
+@pytest.mark.parametrize("tool_name", ["terminal", "read_file", "recall", "retain"])
+def test_conversation_only_rejects_fabricated_tool_calls_before_dispatch(dispatch, tool_name):
     from agent.tool_executor import execute_tool_calls_sequential, execute_tool_calls_concurrent
 
     invoke = Mock(side_effect=AssertionError("tool executor must not run"))
-    call = SimpleNamespace(id="c1", function=SimpleNamespace(name="terminal", arguments='{"command":"id"}'))
+    call = SimpleNamespace(id="c1", function=SimpleNamespace(name=tool_name, arguments='{"command":"id"}'))
     message = SimpleNamespace(tool_calls=[call])
     agent = SimpleNamespace(conversation_only=True, tools=[], valid_tool_names=set(), _invoke_tool=invoke,
                             _interrupt_requested=False, _incremental_persistence_failed=False,
