@@ -149,3 +149,73 @@ def test_http_pagination_filters_before_count_and_metadata_cannot_choose_identit
     assert (rec["peer"], rec["policy_mode"]) == ("alfred", "restricted")
     assert request("GetTask", {"taskId": task_id})["result"]["id"] == task_id
     assert_hidden(request, task_id, "gromit")
+
+
+@pytest.mark.parametrize("method", ["SendMessage", "SendStreamingMessage"])
+@pytest.mark.parametrize("change_mode", [True, False])
+def test_inflight_completion_and_push_recheck_policy(task_http, monkeypatch, method, change_mode):
+    from concurrent.futures import Future
+    import time
+
+    adapter, config, request = task_http
+    ready = threading.Event()
+    pushed, replies, failures = [], [], []
+    pending = {}
+
+    def prepare(params, peer, agent=None):
+        task_id = "inflight-completion"
+        rec = adapter.tasks.create(task_id, "completion-context", peer, policy_mode=adapter._policy_mode(peer))
+        adapter.tasks.set_push_config(task_id, "https://example.invalid/callback")
+        future = Future()
+        pending.update(task_id=task_id, context_id="completion-context", peer=peer, future=future,
+                       started=time.time(), created_iso=rec["created_iso"],
+                       history_context_id=adapter._history_context_id(peer, "completion-context"))
+        ready.set()
+        return None, pending
+
+    class PushResponse:
+        status = 200
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+
+    real_open = urllib.request.urlopen
+    def open_with_push_capture(req, *args, **kwargs):
+        if req.full_url == "https://example.invalid/callback":
+            pushed.append(json.loads(req.data))
+            return PushResponse()
+        return real_open(req, *args, **kwargs)
+
+    monkeypatch.setattr(adapter, "_prepare_task", prepare)
+    monkeypatch.setattr(urllib.request, "urlopen", open_with_push_capture)
+    from plugins.platforms.a2a import security
+    monkeypatch.setattr(security, "is_safe_callback_url", lambda *args, **kwargs: True)
+
+    def send():
+        try:
+            replies.append(request(method, {"message": {"parts": [{"text": "hello"}]}}, "gromit"))
+        except BaseException as exc:
+            failures.append(exc)
+
+    sender = threading.Thread(target=send, daemon=True)
+    sender.start()
+    try:
+        assert ready.wait(timeout=5)
+        if change_mode:
+            config.a2a_conversation_only_peers[:] = ["alfred", "gromit"]
+        pending["future"].set_result((protocol.STATE_COMPLETED, "PRIVATE:completion"))
+    finally:
+        sender.join(timeout=5)
+    assert not sender.is_alive() and not failures
+    if change_mode:
+        assert "PRIVATE:completion" not in json.dumps(replies)
+        assert not pushed
+        assert "PRIVATE:completion" not in adapter.tasks.get(pending["task_id"])["reply"]
+        # Also gate direct push delivery of an already-completed old-mode record.
+        adapter.tasks.set_push_config(pending["task_id"], "https://example.invalid/callback")
+        adapter._send_push_notification(pending["task_id"], "completion-context", "PRIVATE:late-push", protocol.STATE_COMPLETED)
+        assert not pushed
+    else:
+        assert "PRIVATE:completion" in json.dumps(replies)
+        assert "PRIVATE:completion" in json.dumps(pushed)

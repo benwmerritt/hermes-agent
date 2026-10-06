@@ -598,6 +598,9 @@ class A2AAdapter(BasePlatformAdapter):
         input-required detection (a leading marker flags a clarification request)."""
         task_id, context_id, peer = pending["task_id"], pending["context_id"], pending["peer"]
         self._pop_pending(task_id)
+        rec = self.tasks.get(task_id)
+        if not self._task_policy_current(rec):
+            state, reply = protocol.STATE_FAILED, "[task access policy changed]"
         reply = security.redact_outbound(reply or "")
         stripped = reply.lstrip()
         if state == protocol.STATE_COMPLETED and stripped.upper().startswith(protocol.INPUT_REQUIRED_MARKER):
@@ -633,6 +636,9 @@ class A2AAdapter(BasePlatformAdapter):
         if task is None:
             state, reply = self._finalize_task(pending, *self._await_reply(pending))
             task = protocol.build_task(pending["task_id"], pending["context_id"], state, reply, created_at=pending["created_iso"])
+        _, _, error = self._find_task(req_id, {"taskId": task["id"]}, agent, peer)
+        if error:
+            return error
         return _ok(req_id, protocol.send_message_response(task) if v1_response else task)
 
     @staticmethod
@@ -669,6 +675,8 @@ class A2AAdapter(BasePlatformAdapter):
         try:
             terminal, pending = self._prepare_task(params, peer, agent=agent)
             if terminal is not None:
+                if self._find_task(req_id, {"taskId": terminal["id"]}, agent, peer)[2]:
+                    return self._sse_write(handler, protocol.sse_done())
                 return self._emit_terminal(handler, terminal["id"], terminal["contextId"], terminal["status"]["state"],
                                            protocol.extract_text(terminal.get("status", {}).get("message", {}) or {}), req_id=req_id)
             task_id, context_id = pending["task_id"], pending["context_id"]
@@ -676,6 +684,8 @@ class A2AAdapter(BasePlatformAdapter):
             self._sse_write(handler, protocol.sse_data(protocol.stream_task(submitted), req_id))
             self._sse_write(handler, protocol.sse_data(protocol.status_update(task_id, context_id, protocol.STATE_WORKING), req_id))
             state, reply = self._finalize_task(pending, *self._await_reply(pending, keepalive=self._keepalive(handler)))
+            if self._find_task(req_id, {"taskId": task_id}, agent, peer)[2]:
+                return self._sse_write(handler, protocol.sse_done())
             self._emit_terminal(handler, task_id, context_id, state, reply, req_id=req_id)
         except (BrokenPipeError, ConnectionResetError):
             logger.debug("A2A: stream client disconnected")
@@ -697,6 +707,9 @@ class A2AAdapter(BasePlatformAdapter):
             self._emit_terminal(handler, task_id, rec["context_id"], state, reply, req_id=req_id)
         except (BrokenPipeError, ConnectionResetError):
             logger.debug("A2A: subscribe client disconnected")
+
+    def _task_policy_current(self, rec: Optional[dict]) -> bool:
+        return bool(rec and rec.get("peer") and rec.get("policy_mode") == self._policy_mode(rec["peer"]))
 
     def _find_task(self, req_id: Any, params: dict, agent: Optional[dict], peer: str) -> tuple[str, Optional[dict], Optional[dict]]:
         """(task_id, record, None) for a visible task, else (task_id, None, jsonrpc_error)."""
@@ -782,7 +795,7 @@ class A2AAdapter(BasePlatformAdapter):
             logger.warning("A2A: push notification for task %s " + msg, task_id, *args)
 
         callback_url = self.tasks.pop_push_url(task_id)
-        if not callback_url:
+        if not callback_url or not self._task_policy_current(self.tasks.get(task_id)):
             return
         if not security.is_safe_callback_url(callback_url, localhost_mode=self._security_context.localhost_only()):
             return fail("blocked — unsafe callback URL: %s", callback_url)
