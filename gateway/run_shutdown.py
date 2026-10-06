@@ -1052,9 +1052,10 @@ class GatewayShutdownMixin:
             self._flush_agent_transcript_at_shutdown(agent)
             # Off-loop + bounded: plugin on_session_finalize hooks can do arbitrary synchronous work
             # (e.g. a full-session trace export) — same hang class as the memory provider below.
-            await self._finalize_session_off_loop(
-                session_id=getattr(agent, "session_id", None), platform="gateway", reason="shutdown",
-            )
+            if not getattr(agent, "conversation_only", False):
+                await self._finalize_session_off_loop(
+                    session_id=getattr(agent, "session_id", None), platform="gateway", reason="shutdown",
+                )
             # Off-loop + bounded: a wedged memory provider here used to hang the whole shutdown so
             # SIGTERM never completed.
             await self._cleanup_agent_resources_off_loop(agent, context="shutdown finalize")

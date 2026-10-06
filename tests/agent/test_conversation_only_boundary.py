@@ -126,6 +126,26 @@ def test_real_conversation_loop_denies_provider_tool_call(tmp_path, monkeypatch)
     from http.server import BaseHTTPRequestHandler, HTTPServer
     from run_agent import AIAgent
 
+    from hermes_cli import plugins
+    from hermes_cli.plugins import PluginContext
+    from hermes_cli.plugins_manifest import PluginManifest
+
+    manager = plugins.PluginManager()
+    monkeypatch.setattr(plugins, "_plugin_manager", manager)
+    ctx = PluginContext(PluginManifest(name="boundary-sentinel"), manager)
+    fired = []
+
+    def sentinel(**kwargs):
+        fired.append(kwargs)
+        return "PRIVATE_PLUGIN_SENTINEL"
+
+    for hook in ("on_session_start", "on_session_end", "on_session_finalize", "pre_llm_call",
+                 "transform_llm_output", "post_llm_call", "pre_api_request", "post_api_request",
+                 "api_request_error"):
+        ctx.register_hook(hook, sentinel)
+    for kind in ("llm_request", "llm_execution"):
+        ctx.register_middleware(kind, sentinel)
+
     captured = []
     marker = tmp_path / "must-not-exist"
     responses = [
@@ -184,8 +204,33 @@ def test_real_conversation_loop_denies_provider_tool_call(tmp_path, monkeypatch)
             conversation_only=True, max_iterations=3, save_trajectories=False,
         )
         agent._invoke_tool = Mock(side_effect=AssertionError("executor must not run"))
-        result = agent.run_conversation("Hello Wallace.", system_message="PRIVATE_PROMPT_SENTINEL")
+        result = agent.run_conversation(
+            "Hello Wallace.", system_message="PRIVATE_PROMPT_SENTINEL",
+            conversation_history=[
+                {"role": "user", "content": "Earlier hello", "api_content": "PRIVATE_API_SENTINEL"},
+                {"role": "assistant", "content": "Hello", "api_content": "PRIVATE_ASSISTANT_SENTINEL"},
+            ],
+        )
         assert result["final_response"] == "Hello Alfred."
+        agent._invoke_api_request_error_hook(
+            task_id="task", turn_id="turn", api_request_id="request", api_call_count=1,
+            api_start_time=0, api_kwargs={}, error_type="test", error_message="test",
+        )
+        agent.close()
+        assert fired == []
+        assert "PRIVATE_API_SENTINEL" not in json.dumps(captured)
+        assert "PRIVATE_ASSISTANT_SENTINEL" not in json.dumps(captured)
+        assert "PRIVATE_PLUGIN_SENTINEL" not in json.dumps(captured)
+        # The same registered hook still applies to an ordinary agent.
+        import logging
+        from agent.turn_finalizer import _apply_output_hooks
+        agent.conversation_only = False
+        output, transformed, _ = _apply_output_hooks(
+            agent, "ordinary reply", logging.getLogger(__name__), platform="discord",
+            effective_task_id="ordinary", turn_id="ordinary", original_user_message="Hi", messages=[],
+        )
+        assert transformed and output == "PRIVATE_PLUGIN_SENTINEL"
+        assert len(fired) == 2
         agent._invoke_tool.assert_not_called()
         assert not marker.exists()
         assert len(captured) >= 2

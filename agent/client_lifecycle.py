@@ -542,6 +542,8 @@ class ClientLifecycleMixin:
 
     def _adopt_openai_credentials(self, api_key: str, base_url: str, *, reason: str) -> bool:
         """Apply a fresh key/base_url to the OpenAI-style kwargs and rebuild the shared client."""
+        from agent.conversation_policy import check_agent_transport
+        check_agent_transport(self, base_url=base_url)
         self.api_key, self.base_url = api_key.strip(), base_url.strip().rstrip("/")
         self._sync_client_kwargs_credentials()
         return self._replace_primary_openai_client(reason=reason)
@@ -736,6 +738,8 @@ class ClientLifecycleMixin:
             return False
         from hermes_cli.route_identity import normalize_route_base_url
         route_changed = normalize_route_base_url(self.base_url) != normalize_route_base_url(base_url)
+        from agent.conversation_policy import check_agent_transport
+        check_agent_transport(self, base_url=base_url)
         prior_api_key, prior_base_url = self.api_key, self.base_url
         prior_client_kwargs = dict(self._client_kwargs)
         self.api_key, self.base_url = api_key, base_url

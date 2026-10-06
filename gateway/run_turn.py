@@ -48,13 +48,8 @@ class GatewayTurnMixin:
 
     def _is_conversation_only_peer(self, source) -> bool:
         """A2A boundary keyed only by the adapter's authenticated source.user_id."""
-        platform = getattr(source, "platform", "")
-        if getattr(platform, "value", platform) != "a2a":
-            return False
-        peers = getattr(getattr(self, "config", None), "a2a_conversation_only_peers", None)
-        if not isinstance(peers, list) or any(not isinstance(peer, str) or not peer.strip() for peer in peers):
-            return True
-        return ("*" in peers) or not isinstance(getattr(source, "user_id", None), str) or source.user_id in peers
+        from gateway.config import is_conversation_only_peer
+        return is_conversation_only_peer(getattr(self, "config", None), source)
 
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
@@ -390,7 +385,7 @@ class GatewayTurnMixin:
         if _is_fresh_reset:
             # See #6508.
             session_entry.is_fresh_reset = False
-        if _is_new_session:
+        if _is_new_session and not self._is_conversation_only_peer(source):
             await self.hooks.emit("session:start", {
                 "platform": source.platform.value if source.platform else "",
                 "user_id": source.user_id,
@@ -1209,7 +1204,7 @@ class GatewayTurnMixin:
         histories don't cause repeated truncation/context failures. Token source: the API's
         prompt_tokens from the last turn, else a char/4 estimate."""
         from gateway.run import HygieneTurnHoldExceeded
-        if not history or len(history) < 4:
+        if self._is_conversation_only_peer(source) or not history or len(history) < 4:
             return history
 
         hs = await self._hmwa_hygiene_settings(source, session_key)
@@ -1958,7 +1953,8 @@ class GatewayTurnMixin:
                 "session_id": session_entry.session_id,
                 "message": message_text[:500],
             }
-            await self.hooks.emit("agent:start", hook_ctx)
+            if not self._is_conversation_only_peer(source):
+                await self.hooks.emit("agent:start", hook_ctx)
 
             # Capture the launch session id so post-run compression publication is identity-guarded
             # (a /new may move session_entry.session_id while the old run is still unwinding).
@@ -1999,7 +1995,8 @@ class GatewayTurnMixin:
             # Streaming already delivered the body: the footer goes out as a trailing send instead.
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
                 response = f"{response}\n\n{_footer_line}"
-            await self._hmwa_post_turn_hooks(hook_ctx, agent_result, response)
+            if not self._is_conversation_only_peer(source):
+                await self._hmwa_post_turn_hooks(hook_ctx, agent_result, response)
 
             agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure = (
                 self._hmwa_classify_turn_failure(agent_result, history, session_entry)
@@ -2171,7 +2168,6 @@ class GatewayTurnMixin:
                     enabled_toolsets=[] if _background_conversation_only else enabled_toolsets,
                     disabled_toolsets=[] if _background_conversation_only else (disabled_toolsets or []),
                     ephemeral_system_prompt="",
-                    prefill_messages=[] if _background_conversation_only else (getattr(self, "_prefill_messages", None) or []),
                     reasoning_config=reasoning_config,
                     service_tier=self._service_tier,
                     request_overrides=turn_route.get("request_overrides"),

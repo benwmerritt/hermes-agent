@@ -91,7 +91,8 @@ class SessionRecoveryMixin:
         """Session key for *source* (profile from *source*; key from *key_source* if given)."""
         from gateway.session import build_session_key
         return build_session_key(
-            key_source if key_source is not None else source,
+            source if source.platform.value == "a2a" else (key_source if key_source is not None else source),
+            gateway_config=self.config,
             group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
             profile=self._resolve_profile_for_key(source))
@@ -215,7 +216,7 @@ class SessionRecoveryMixin:
         ``migrated_legacy`` tells the caller to rewrite the peer row to the scoped key."""
         legacy_key = self._legacy_slack_session_key(source)
         recovered = self._find_gateway_session_row(
-            session_key=session_key, source=source, allow_peer_fallback=legacy_key is None,
+            session_key=session_key, source=source, allow_peer_fallback=legacy_key is None and source.platform.value != "a2a",
             raise_on_lookup_error=raise_on_lookup_error)
         migrated_legacy = False
         if not recovered and legacy_key and self._claim_legacy_slack_key(legacy_key):
@@ -224,6 +225,8 @@ class SessionRecoveryMixin:
                 raise_on_lookup_error=raise_on_lookup_error)
             migrated_legacy = bool(recovered)
         if not isinstance(recovered, dict):
+            return None, False
+        if source.platform.value == "a2a" and recovered.get("session_key") != session_key:
             return None, False
         if not self._recovered_row_matches_source_scope(recovered, source):
             return None, False

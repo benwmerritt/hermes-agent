@@ -4739,6 +4739,9 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
 
 def _resolve_external_process_branch(req: _ResolveRequest, creds: Dict[str, Any]) -> _ResolveResult:
     """PROVIDER_REGISTRY ``external_process`` providers, served via their registered profile."""
+    from agent.conversation_policy import _restricted_resolution
+    if _restricted_resolution.get():
+        raise ValueError("Execution-capable providers are disabled for conversation-only agents")
     provider = req.provider
     final_model = _normalize_resolved_model(
         req.model or (req.main_runtime.get("model") if req.main_runtime else None) or _read_main_model_for_aux(),
@@ -4841,6 +4844,8 @@ def resolve_provider_client(
     (full auto-detection chain). ``model=None`` → provider's default aux model. ``raw_codex`` → bare OpenAI
     client for ``responses.stream()`` callers. ``api_mode`` forces "codex_responses"/"chat_completions"/
     "anthropic_messages" instead of auto-detect. Returns (client, resolved_model) or (None, None)."""
+    from agent.conversation_policy import _restricted_resolution, require_conversation_transport
+    require_conversation_transport(_restricted_resolution.get(), provider, api_mode, explicit_base_url)
     _validate_proxy_env_urls()
     # Keep the pre-alias name so a custom_providers entry named like a built-in alias
     # (e.g. "kimi" → "kimi-coding") is still reachable via the named-custom branch.

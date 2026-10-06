@@ -675,13 +675,14 @@ class TestTaskRpcHandlers:
         """Cancel must reset anti-loop turns for the task's CONTEXT (the old
         code passed the task_id into a context-keyed map — silent no-op)."""
         adapter = _bare_adapter()
+        history_context = adapter._history_context_id("peer", "ctx-loopy")
         for _ in range(4):
-            adapter._turns.track("ctx-loopy")
+            adapter._turns.track(history_context)
         adapter.tasks.create("task-c", "ctx-loopy", "peer")
         resp = adapter._rpc_tasks_cancel(1, {"taskId": "task-c"})
         assert resp["result"]["status"]["state"] == "TASK_STATE_CANCELED"
         # Turn counter went back to zero: next track() is turn 1.
-        assert adapter._turns.track("ctx-loopy") == 1
+        assert adapter._turns.track(history_context) == 1
 
     def test_cancel_terminal_task_not_cancelable(self):
         adapter = _bare_adapter()
@@ -1583,7 +1584,7 @@ class TestV1SpecRegressionFixes:
 
     def test_forward_to_profile_first_contact_creates_then_resumes_fake_hermes(self, monkeypatch, tmp_path):
         from plugins.platforms.a2a.adapter import A2AAdapter
-        from gateway.config import PlatformConfig
+        from gateway.config import GatewayConfig, PlatformConfig
 
         profile_home = tmp_path / "profile"
         profile_home.mkdir()
@@ -1617,6 +1618,7 @@ print('fake reply')
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
             "agents": {"dev": {"profile": "dev", "tenant": "dev", "timeout": 5}}
         }))
+        adapter.set_session_store(SimpleNamespace(config=GatewayConfig.from_dict({})))
         agent = adapter._agents["dev"]
         reply, state = adapter._forward_to_profile(agent, "peer", "ctx/unsafe value", "hello")
         assert (reply, state) == ("fake reply", protocol.STATE_COMPLETED)
@@ -1628,7 +1630,8 @@ print('fake reply')
         con = sqlite3.connect(db)
         title = con.execute("SELECT title FROM sessions WHERE id='sess-1'").fetchone()[0]
         con.close()
-        assert title == "a2a-dev-ctx-unsafe-value"
+        encoded_identity = title.removeprefix("a2a-v2-unrestricted-")
+        assert json.loads(bytes.fromhex(encoded_identity)) == ["peer", agent["slug"], "ctx/unsafe value"]
 
 
 # --------------------------------------------------------------------------

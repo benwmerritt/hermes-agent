@@ -140,6 +140,8 @@ class GatewaySessionCommandsMixin:
                                         new_sid) -> None:
         """Session-boundary hooks: plugin finalize (off-loop + bounded — trace exports can block
         arbitrarily), then session:end and session:reset."""
+        if self._is_conversation_only_peer(source):
+            return
         platform_value = source.platform.value if source.platform else ""
         with contextlib.suppress(Exception):
             await self._finalize_session_off_loop(
@@ -443,7 +445,7 @@ class GatewaySessionCommandsMixin:
             return t("gateway.undo.nothing")
         session_entry.last_prompt_tokens = 0  # transcript was truncated
         try:
-            self._evict_cached_agent(build_session_key(source))
+            self._evict_cached_agent(self._session_key_for_source(source))
         except Exception as e:
             logger.debug("undo: cached-agent eviction skipped: %s", e)
         target_text = result["target_text"]

@@ -836,9 +836,9 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Dict[str,
     Falls through to the init-time fallback chain, then raises with the missing-key /
     no-provider diagnostic.
     """
-    from agent.auxiliary_client import resolve_provider_client
-    _routed_client, _ = resolve_provider_client(
-        agent.provider or "auto", model=agent.model, raw_codex=True)
+    from agent.conversation_policy import resolve_agent_client, check_agent_transport
+    _routed_client, _ = resolve_agent_client(
+        agent, agent.provider or "auto", model=agent.model, raw_codex=True)
     if _routed_client is not None:
         return _client_kwargs_from_routed(_routed_client, _provider_timeout)
     # No credentials: try the fallback chain BEFORE failing (an exhausted single-entry pool
@@ -851,9 +851,10 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Dict[str,
     for _fb in _fallback_entries(fallback_model):
         try:
             from hermes_cli.fallback_config import resolve_entry_api_key
+            check_agent_transport(agent, provider=_fb["provider"], api_mode=_fb.get("api_mode"), base_url=_fb.get("base_url"))
             _fb_explicit_key = resolve_entry_api_key(_fb)
-            _fb_client, _fb_model = resolve_provider_client(
-                _fb["provider"], model=_fb["model"], raw_codex=True,
+            _fb_client, _fb_model = resolve_agent_client(
+                agent, _fb["provider"], model=_fb["model"], raw_codex=True,
                 explicit_base_url=_fb.get("base_url"), explicit_api_key=_fb_explicit_key,
             )
         except Exception as _fb_exc:
@@ -2315,6 +2316,8 @@ def init_agent(
     agent.acp_args = list(acp_args or args or [])
     _resolve_api_mode(agent, api_mode, provider_name, base_url)
     _finalize_routing(agent, api_mode, credential_pool)
+    from agent.conversation_policy import check_agent_transport
+    check_agent_transport(agent)
 
     # Platform callbacks are stored under their parameter names verbatim.
     for _cb in _CALLBACK_PARAMS:

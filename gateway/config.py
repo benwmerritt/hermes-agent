@@ -73,6 +73,18 @@ def _normalize_multiplex_profile_allowlist(value: Any) -> Optional[List[str]]:
     return normalized
 
 
+def is_conversation_only_peer(config, source) -> bool:
+    """Policy for the authenticated adapter identity, never message metadata."""
+    platform = getattr(source, "platform", "")
+    if getattr(platform, "value", platform) != "a2a":
+        return False
+    peers = getattr(config, "a2a_conversation_only_peers", None)
+    if not isinstance(peers, list) or any(not isinstance(peer, str) or not peer.strip() for peer in peers):
+        return True
+    peer = getattr(source, "user_id", None)
+    return "*" in peers or not isinstance(peer, str) or not peer or peer in peers
+
+
 def _normalize_a2a_conversation_only_peers(value: Any) -> List[str]:
     """Normalize exact authenticated peer ids; malformed values fail closed."""
     if not isinstance(value, list):

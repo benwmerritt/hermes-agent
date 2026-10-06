@@ -120,12 +120,6 @@ def _daemon_thread(target, name: str) -> threading.Thread:
     return t
 
 
-def _safe_context_slug(value: str, max_len: int = 96) -> str:
-    """Sanitize attacker-provided context ids before using in session titles."""
-    slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value or "")).strip("-._")
-    return (slug or "ctx")[:max_len]
-
-
 def _state_db(profile: str, sql: str, params: tuple, log_msg: str, *, commit: bool = False) -> str:
     """Run one statement against a profile's state.db; first column of the first row or ""."""
     home = _profile_home(profile)
@@ -491,6 +485,14 @@ class A2AAdapter(BasePlatformAdapter):
         protocol.metrics.tasks_failed += state == protocol.STATE_FAILED
         return protocol.build_task(rec["task_id"], rec["context_id"], state, text, created_at=rec["created_iso"]), None
 
+    def _history_context_id(self, peer: str, context_id: str) -> str:
+        from gateway.config import is_conversation_only_peer
+        source = self.build_source(chat_id=context_id, chat_type="dm", user_id=peer)
+        config = getattr(getattr(self, "_session_store", None), "config", None)
+        mode = "restricted" if is_conversation_only_peer(config, source) else "unrestricted"
+        identity = json.dumps([peer, context_id], ensure_ascii=True, separators=(",", ":")).encode().hex()
+        return f"a2a-v2-{mode}-{identity}"
+
     def _prepare_task(self, params: dict, peer: str, agent: Optional[dict] = None) -> tuple[Optional[dict], Optional[dict]]:
         """Validate, register, and dispatch an inbound message (HTTP worker thread). Returns
         (terminal_task, None) when it ends immediately, else (None, pending) with the future to wait on."""
@@ -498,7 +500,8 @@ class A2AAdapter(BasePlatformAdapter):
         text = protocol.extract_text(params)
         context_id = protocol.extract_context_id(params) or protocol.new_context_id()
         task_id = protocol.new_task_id()
-        turn = self._turns.track(context_id)
+        history_context_id = self._history_context_id(peer, context_id)
+        turn = self._turns.track(history_context_id)
         max_turns = protocol.max_pingpong_turns()
         rec = self.tasks.create(task_id, context_id, peer, *self._scope_for_agent(agent))
         if turn > max_turns:
@@ -510,18 +513,18 @@ class A2AAdapter(BasePlatformAdapter):
             return self._end_task(rec, protocol.STATE_REJECTED, "Empty task — nothing to do.")
         framed = security.wrap_inbound(peer, text)
         security.audit("inbound", peer, task_id, text)
-        protocol.persist_message(context_id, "user", text, task_id)
+        protocol.persist_message(history_context_id, "user", text, task_id)
         protocol.metrics.inbound_total += 1
         self._register_inline_push(task_id, params, agent=agent)
         if not agent.get("local", True):
             reply, state = self._forward_to_profile(agent, peer, context_id, framed)
-            self._record_outcome(task_id, context_id, peer, state, reply)
+            self._record_outcome(task_id, context_id, peer, state, reply, history_context_id=history_context_id)
             return protocol.build_task(task_id, context_id, state, reply, created_at=rec["created_iso"]), None
         if self._loop is None or self._message_handler is None:
             return self._end_task(rec, protocol.STATE_FAILED, "Agent gateway not ready to accept A2A tasks.")
-        fut = self._add_pending(task_id, context_id)
+        fut = self._add_pending(task_id, history_context_id)
         event = MessageEvent(text=framed, message_type=MessageType.TEXT, message_id=task_id,
-                             source=self.build_source(chat_id=context_id, chat_name=f"a2a:{peer}", chat_type="dm", user_id=peer, user_name=peer))
+                             source=self.build_source(chat_id=history_context_id, chat_name=f"a2a:{peer}", chat_type="dm", user_id=peer, user_name=peer))
         try:
             asyncio.run_coroutine_threadsafe(self.handle_message(event), self._loop)
         except Exception as e:
@@ -529,15 +532,20 @@ class A2AAdapter(BasePlatformAdapter):
             msg = security.redact_outbound(f"Dispatch failed: {e}")
             return self._end_task(rec, protocol.STATE_FAILED, msg, stored_reply=msg)
         self.tasks.set_state(task_id, protocol.STATE_WORKING)
-        return None, {"task_id": task_id, "context_id": context_id, "peer": peer, "future": fut, "created_iso": rec["created_iso"], "started": time.time()}
+        return None, {"task_id": task_id, "context_id": context_id, "peer": peer, "future": fut, "created_iso": rec["created_iso"], "started": time.time(), "history_context_id": history_context_id}
 
     def _forward_to_profile(self, agent: dict, peer: str, context_id: str, framed_text: str) -> tuple[str, str]:
         """Forward a routed task to another local profile via ``hermes chat``. First contact creates a
         ``source=a2a`` session and titles it deterministically; later turns ``--resume`` that id."""
+        from gateway.config import is_conversation_only_peer
+        source = self.build_source(chat_id=context_id, chat_type="dm", user_id=peer)
+        config = getattr(getattr(self, "_session_store", None), "config", None)
+        if is_conversation_only_peer(config, source):
+            return "Profile forwarding is disabled for conversation-only peers.", protocol.STATE_REJECTED
         profile = str(agent.get("profile") or agent.get("slug") or "").strip()
         slug = str(agent.get("slug") or profile or "agent")
-        safe_ctx = _safe_context_slug(context_id)
-        session_title = f"a2a-{slug}-{safe_ctx}"
+        safe_ctx = json.dumps([peer, slug, context_id], ensure_ascii=True, separators=(",", ":")).encode().hex()
+        session_title = f"a2a-v2-unrestricted-{safe_ctx}"
         key = (profile or "default", slug, safe_ctx)
         timeout = int(agent.get("timeout") or _reply_timeout())
         with self._forward_lock(key):
@@ -568,9 +576,9 @@ class A2AAdapter(BasePlatformAdapter):
             return security.redact_outbound((proc.stdout or "").strip()), protocol.STATE_COMPLETED
 
     def _record_outcome(self, task_id: str, context_id: str, peer: str, state: str, reply: str,
-                        started: Optional[float] = None) -> None:
+                        started: Optional[float] = None, history_context_id: Optional[str] = None) -> None:
         """Persist + audit + count a finished task, mark it terminal, and fire its push callback."""
-        protocol.persist_message(context_id, "agent", reply, task_id)
+        protocol.persist_message(history_context_id or self._history_context_id(peer, context_id), "agent", reply, task_id)
         security.audit("outbound", peer, task_id, reply)
         m = protocol.metrics
         if state in (protocol.STATE_COMPLETED, protocol.STATE_INPUT_REQUIRED):
@@ -591,7 +599,8 @@ class A2AAdapter(BasePlatformAdapter):
         stripped = reply.lstrip()
         if state == protocol.STATE_COMPLETED and stripped.upper().startswith(protocol.INPUT_REQUIRED_MARKER):
             state, reply = protocol.STATE_INPUT_REQUIRED, stripped[len(protocol.INPUT_REQUIRED_MARKER):].strip()
-        self._record_outcome(task_id, context_id, peer, state, reply, started=pending["started"])
+        self._record_outcome(task_id, context_id, peer, state, reply, started=pending["started"],
+                             history_context_id=pending.get("history_context_id"))
         return state, reply
 
     @staticmethod
@@ -712,7 +721,7 @@ class A2AAdapter(BasePlatformAdapter):
         if rec["state"] in protocol.TERMINAL_STATES:
             return _err(req_id, protocol.ERR_TASK_NOT_CANCELABLE, f"task {task_id} already {rec['state']}")
         self.tasks.complete(task_id, protocol.STATE_CANCELED, "")
-        self._turns.reset(rec["context_id"])
+        self._turns.reset(self._history_context_id(rec["peer"], rec["context_id"]))
         self._resolve_task(task_id, protocol.STATE_CANCELED, "")
         rec = self.tasks.get(task_id, *self._scope_for_agent(agent)) or rec
         return _ok(req_id, protocol.TaskStore.to_task(rec))

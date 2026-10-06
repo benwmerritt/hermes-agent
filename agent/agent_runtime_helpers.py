@@ -1120,6 +1120,8 @@ def restore_primary_runtime(agent) -> bool:
     if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
         return False  # primary still in rate-limit cooldown, stay on fallback
     rt = agent._primary_runtime
+    from agent.conversation_policy import check_agent_transport
+    check_agent_transport(agent, **{key: (rt or {}).get(key) for key in ("provider", "api_mode", "base_url")})
     primary_provider = str((rt or {}).get("provider") or "").strip().lower()
     primary_runtime_base_url = str((rt or {}).get("base_url") or "")
 
@@ -1670,6 +1672,8 @@ def _gemini_native_client(agent, client_kwargs: dict, httpx_verify, *, reason: s
 
 
 def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
+    from agent.conversation_policy import check_agent_transport
+    check_agent_transport(agent, base_url=client_kwargs.get("base_url"))
     from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls
     from agent.ssl_verify import resolve_httpx_verify
     # Treat client_kwargs as read-only: callers pass agent._client_kwargs, and in-place mutation
@@ -1831,6 +1835,8 @@ def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mo
     effective_base_url = base_url
     if not effective_base_url and old_norm == new_norm:
         effective_base_url = getattr(agent, "base_url", "")
+    from agent.conversation_policy import check_agent_transport
+    check_agent_transport(agent, provider=new_provider, api_mode=api_mode, base_url=effective_base_url)
     destination_capabilities = (
         dict(capabilities)
         if isinstance(capabilities, dict)

@@ -381,6 +381,8 @@ def _consume_user_interrupt(agent, active: bool = True) -> tuple[bool, Any]:
 
 def _ensure_codex_session(agent) -> None:
     """Lazily spawn one CodexAppServerSession per AIAgent (reused across turns, closed by the _cleanup hook)."""
+    from agent.conversation_policy import check_agent_transport
+    check_agent_transport(agent, api_mode="codex_app_server")
     if getattr(agent, "_codex_session", None) is not None:
         return
     from agent.runtime_cwd import resolve_agent_cwd

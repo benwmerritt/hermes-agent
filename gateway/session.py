@@ -641,6 +641,7 @@ def _canonical_participant(source: SessionSource) -> Optional[str]:
 def build_session_key(
     source: SessionSource, group_sessions_per_user: bool = True,
     thread_sessions_per_user: bool = False, profile: Optional[str] = None,
+    gateway_config: Optional[GatewayConfig] = None,
 ) -> str:
     """Build a deterministic session key from a message source (single source of truth).
 
@@ -648,8 +649,16 @@ def build_session_key(
     Slack ``scope_id`` precedes chat ids (Discord guild scope is deliberately NOT added, for key
     compatibility). DMs are isolated per chat_id, falling back to the sender id, then to one
     session per platform. Groups add the participant id only when ``group_sessions_per_user`` and
-    not in a thread (threads are shared unless ``thread_sessions_per_user``).
+    not in a thread (threads are shared unless ``thread_sessions_per_user``). A2A uses an
+    encoded peer/context tuple and the restriction mode from parsed gateway config.
     """
+    if source.platform.value == "a2a":
+        from gateway.config import is_conversation_only_peer
+        mode = "restricted" if is_conversation_only_peer(gateway_config, source) else "unrestricted"
+        # Encode the whole tuple so delimiters and Unicode in peer/context cannot alias.
+        route = json.dumps([source.user_id, source.chat_id, source.chat_type, source.thread_id],
+                           ensure_ascii=True, separators=(",", ":")).encode().hex()
+        return f"{_session_key_namespace(profile)}:a2a:v2:{mode}:{route}"
     is_dm = source.chat_type == "dm"
     chat_id = source.chat_id
     if is_dm and source.platform == Platform.WHATSAPP:
@@ -1111,6 +1120,11 @@ class SessionStore(
             old_entry = self._entry_locked(session_key)
             if old_entry is None:
                 return None
+            if old_entry.origin.platform.value == "a2a":
+                db = self._db_for_key(session_key)
+                target = db.get_session(target_session_id) if db else None
+                if not target or target.get("session_key") != session_key:
+                    return None
             if old_entry.session_id == target_session_id:
                 return old_entry
             new_entry = self._replace_route_locked(
