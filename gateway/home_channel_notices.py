@@ -8,7 +8,6 @@ the WhatsApp adapter's logged-out notice.
 
 from __future__ import annotations
 
-import contextlib
 from pathlib import Path
 from typing import Callable
 
@@ -24,6 +23,7 @@ async def send_profile_home_notice(
     from gateway.run import _async_profile_runtime_scope
     from gateway.warning_notifications import present_notification
     from hermes_constants import get_routing_process_hermes_home
+    from tui_gateway.launch_profile_policy import async_launch_profile_scope_if_multiplexed
 
     served_homes = runner._served_profile_homes or {}
     delivered = 0
@@ -33,8 +33,11 @@ async def send_profile_home_notice(
         served_home = served_homes.get(profile) if profile is not None else None
         if not owns_home(Path(served_home or get_routing_process_hermes_home())):
             continue
-        # The opt-out is the owning profile's; the launch profile needs no extra scope.
-        scope = _async_profile_runtime_scope(Path(served_home)) if served_home else contextlib.nullcontext()
+        # The owning profile's scope, bound for the launch profile too: the caller may be a task
+        # created inside a turn routed to another profile, whose language, opt-out and ``-p``
+        # selector an unbound body would inherit.
+        scope = (_async_profile_runtime_scope(Path(served_home)) if served_home
+                 else async_launch_profile_scope_if_multiplexed())
         async with scope:
             message = render_message()
             accepted = False

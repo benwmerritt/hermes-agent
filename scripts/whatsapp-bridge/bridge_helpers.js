@@ -704,6 +704,11 @@ export function createReconnectScheduler(startFn, {
  * server removing the device. Consecutive closes double the wait (±25%
  * jitter, capped at maxMs); a connection that then stays open for stableMs
  * counts as recovered, so the next close starts over at baseMs.
+ *
+ * The close handler calls noteClose() on every close and nextDelayMs() only
+ * for the ones it backs off (not 515): a close that skipped the bookkeeping
+ * left the stable open on record for the next brief open to overwrite, so a
+ * recovered connection resumed the ladder at the cap instead of baseMs.
  */
 export function createReconnectBackoff({
   baseMs = 3000,
@@ -718,9 +723,11 @@ export function createReconnectBackoff({
     noteOpen() {
       openedAt = now();
     },
-    nextDelayMs() {
+    noteClose() {
       if (openedAt !== null && now() - openedAt >= stableMs) closes = 0;
       openedAt = null;
+    },
+    nextDelayMs() {
       const delay = Math.min(baseMs * 2 ** Math.min(closes, 20), maxMs);
       closes += 1;
       return Math.min(maxMs, Math.round(delay * (0.75 + random() * 0.5)));

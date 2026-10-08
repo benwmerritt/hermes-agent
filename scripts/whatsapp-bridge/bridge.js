@@ -445,7 +445,10 @@ async function startSocket() {
       } else {
         // 515 = restart requested (common after pairing): reconnect at once. Anything else backs
         // off, so a server that keeps closing us sees a client that waits rather than a hammer.
+        // Every close is recorded, 515 included, or a stable open stays on the books for the
+        // next brief one to overwrite.
         emitPairEvent({ event: 'disconnected', reason });
+        reconnectBackoff.noteClose();
         const delayMs = reason === 515 ? 1000 : reconnectBackoff.nextDelayMs();
         if (!PAIR_JSON) {
           if (reason === 515) {

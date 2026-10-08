@@ -181,6 +181,38 @@ async def test_pending_logged_out_notice_does_not_hold_up_the_fatal_handler():
     runner.tasks[0].cancel()
 
 
+@pytest.mark.asyncio
+async def test_logged_out_notice_is_rendered_under_the_owning_profile_not_the_routed_turn(tmp_path, monkeypatch):
+    """A guarded send can observe the exit inside a turn routed to another profile; the notice task
+    copies that context, so unbound it would inherit the routed profile's opt-out, language and
+    ``-p`` selector. The owning (launch) profile's scope must be bound explicitly."""
+    from agent.secret_scope import set_multiplex_active
+    from gateway.run import _profile_runtime_scope
+    from hermes_constants import get_hermes_home
+
+    launch, routed = tmp_path / "launch", tmp_path / "routed"
+    for home in (launch, routed):
+        home.mkdir()
+    (launch / "config.yaml").write_text("display: {suppress_warning_notifications: false}\n", encoding="utf-8")
+    (routed / "config.yaml").write_text("display: {suppress_warning_notifications: true}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    set_multiplex_active(True)  # routed turns exist only on a multi-profile host (conftest resets the latch)
+    rendered_under = []
+    runner = _runner([(None, Platform.SLACK, None, _home("C-OPS"), object())])
+    runner._send_home_channel_message = AsyncMock(side_effect=lambda *_a: rendered_under.append(get_hermes_home()) or True)
+    adapter = _make_adapter(runner)
+    adapter.set_fatal_error_handler(AsyncMock())
+    adapter._bridge_process = _exited(_BRIDGE_EXIT_LOGGED_OUT)
+
+    with patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
+            _profile_runtime_scope(routed, hydrate_secrets=False):
+        await adapter._check_managed_bridge_exit()
+    await _notices_settled(runner)
+
+    runner._send_home_channel_message.assert_awaited_once()  # the routed profile's opt-out does not apply
+    assert rendered_under == [launch]
+
+
 class _LoggedOutAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="token"), Platform.WHATSAPP)
@@ -218,3 +250,35 @@ async def test_runner_drops_logged_out_whatsapp_instead_of_queueing_it(tmp_path)
     assert Platform.WHATSAPP not in runner._failed_platforms
     assert runner.adapters == {Platform.SLACK: other}
     runner.stop.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("secondary", ["none", "live", "reconnecting"])
+async def test_logout_on_the_only_primary_platform_keeps_a_gateway_with_secondary_profiles_up(tmp_path, secondary):
+    """``self.adapters`` and ``_failed_platforms`` are the launch profile's alone: a secondary profile's
+    Slack, live or mid-reconnect, must keep the gateway up. With no other platform anywhere the
+    existing clean stop on a non-retryable fatal is unchanged."""
+    config = GatewayConfig(
+        platforms={Platform.WHATSAPP: PlatformConfig(enabled=True, token="token")},
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    adapter = _LoggedOutAdapter()
+    adapter._set_fatal_error("whatsapp_logged_out", "logged out", retryable=False)
+    runner.adapters = {Platform.WHATSAPP: adapter}
+    runner.delivery_router.adapters = runner.adapters
+    if secondary == "live":
+        runner._profile_adapters = {"ops": {Platform.SLACK: MagicMock(name="slack")}}
+    elif secondary == "reconnecting":
+        runner._profile_failed_platforms = {"ops": {Platform.SLACK: MagicMock(name="reconnect-task")}}
+    runner.stop = AsyncMock()
+
+    await runner._handle_adapter_fatal_error(adapter)
+
+    assert runner.adapters == {}
+    if secondary == "none":
+        runner.stop.assert_awaited_once()
+        assert runner._exit_with_failure is False
+    else:
+        runner.stop.assert_not_awaited()
+        assert runner._exit_reason is None

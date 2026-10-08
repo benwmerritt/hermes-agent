@@ -133,11 +133,18 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 
 // -- createReconnectBackoff -----------------------------------------------
 
+// The close handler's two steps for a close it backs off: record it, then
+// take the next rung of the ladder.
+const backedOffClose = (backoff) => {
+  backoff.noteClose();
+  return backoff.nextDelayMs();
+};
+
 // Consecutive closes double the wait from the base up to the cap; with the
 // jitter source pinned to its midpoint the delays are exact.
 {
   const backoff = createReconnectBackoff({ random: () => 0.5, now: () => 0 });
-  const delays = Array.from({ length: 9 }, () => backoff.nextDelayMs());
+  const delays = Array.from({ length: 9 }, () => backedOffClose(backoff));
   assert.deepEqual(delays, [3000, 6000, 12000, 24000, 48000, 96000, 192000, 300000, 300000]);
 }
 
@@ -145,10 +152,10 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 {
   const low = createReconnectBackoff({ random: () => 0, now: () => 0 });
   const high = createReconnectBackoff({ random: () => 1, now: () => 0 });
-  assert.equal(low.nextDelayMs(), 2250);
-  assert.equal(high.nextDelayMs(), 3750);
-  for (let i = 0; i < 10; i += 1) high.nextDelayMs();
-  assert.equal(high.nextDelayMs(), 300000, 'jitter must not push past the cap');
+  assert.equal(backedOffClose(low), 2250);
+  assert.equal(backedOffClose(high), 3750);
+  for (let i = 0; i < 10; i += 1) backedOffClose(high);
+  assert.equal(backedOffClose(high), 300000, 'jitter must not push past the cap');
 }
 
 // A connection that stays open for the stable window counts as recovered:
@@ -156,12 +163,12 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 {
   let clock = 0;
   const backoff = createReconnectBackoff({ random: () => 0.5, now: () => clock, stableMs: 60000 });
-  backoff.nextDelayMs();
-  backoff.nextDelayMs();
-  assert.equal(backoff.nextDelayMs(), 12000);
+  backedOffClose(backoff);
+  backedOffClose(backoff);
+  assert.equal(backedOffClose(backoff), 12000);
   backoff.noteOpen();
   clock += 60000;
-  assert.equal(backoff.nextDelayMs(), 3000, 'a stable connection resets the backoff');
+  assert.equal(backedOffClose(backoff), 3000, 'a stable connection resets the backoff');
 }
 
 // A connection that opens but drops again inside the window is still part
@@ -169,12 +176,39 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 {
   let clock = 0;
   const backoff = createReconnectBackoff({ random: () => 0.5, now: () => clock, stableMs: 60000 });
-  backoff.nextDelayMs();
+  backedOffClose(backoff);
   backoff.noteOpen();
   clock += 59999;
-  assert.equal(backoff.nextDelayMs(), 6000, 'a short-lived open must not reset');
+  assert.equal(backedOffClose(backoff), 6000, 'a short-lived open must not reset');
   clock += 120000;
-  assert.equal(backoff.nextDelayMs(), 12000, 'elapsed time without an open must not reset');
+  assert.equal(backedOffClose(backoff), 12000, 'elapsed time without an open must not reset');
+}
+
+// A 515 close reconnects at once but is still a close: it records the stable
+// open that preceded it and clears the open timestamp. Skipping that left the
+// stable open on the books for the next brief open to overwrite, so a storm
+// that had reached the cap, recovered, restarted on 515 and then dropped once
+// more waited the full cap (300 s) instead of starting over at the base.
+{
+  let clock = 0;
+  const backoff = createReconnectBackoff({ random: () => 0.5, now: () => clock, stableMs: 60000 });
+  for (let i = 0; i < 8; i += 1) backedOffClose(backoff);
+  assert.equal(backedOffClose(backoff), 300000, 'precondition: the ladder is at the cap');
+  backoff.noteOpen();
+  clock += 60000;
+  backoff.noteClose(); // 515: no rung taken, the 1 s delay is the caller's
+  backoff.noteOpen();
+  clock += 1000;
+  assert.equal(backedOffClose(backoff), 3000, 'the stable open before the 515 close ends the storm');
+}
+
+// The 515 close itself takes no rung: an ordinary close right after it
+// continues the ladder where it was.
+{
+  const backoff = createReconnectBackoff({ random: () => 0.5, now: () => 0 });
+  backedOffClose(backoff);
+  backoff.noteClose();
+  assert.equal(backedOffClose(backoff), 6000, 'a 515 close must not advance the ladder');
 }
 
 console.log('bridge.reconnect.test.mjs: all assertions passed');
