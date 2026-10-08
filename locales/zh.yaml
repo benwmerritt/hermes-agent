@@ -852,8 +852,6 @@ gateway:
   cron_store:
     unwritable: "⚠️ Cron 存储 {store} 自 {since} 起无法写入（{error}）。在恢复可写之前，计划任务将被跳过。修复方法：{fix}。"
     recovered: "✅ Cron 存储 {store} 已恢复可写；跳过了 {skipped} 次运行，每个任务将补跑一次。"
-  whatsapp:
-    logged_out: "⚠️ WhatsApp 已将此设备登出，网关已停止 WhatsApp 桥接且不再重试：发往 WhatsApp 的消息和定时发送正在失败。请用 `hermes {profile_arg}whatsapp` 重新配对（扫描二维码），然后运行 `hermes {profile_arg}gateway restart`。"
   whoami:
     scope_dm: "私聊"
     scope_group: "群组/频道"
@@ -964,6 +962,7 @@ platform:
     approved: "✅ 已批准。"
     denied: "❌ 已拒绝。"
     approval_expired: "⌛ 审批已过期——命令未执行（已超时或已在别处处理）。"
+    logged_out: "⚠️ WhatsApp 已将此设备登出，网关已停止 WhatsApp 桥接且不再重试：发往 WhatsApp 的消息和定时发送正在失败。请用 `hermes {profile_arg}whatsapp` 重新配对（扫描二维码），然后运行 `hermes {profile_arg}gateway restart`。"
   yuanbao:
     slow_response_notice: "任务有点复杂，正在努力处理中，请耐心等待..."
     owner_command_denied: "⚠️ {command} 仅在私聊模式下对创建者可用"

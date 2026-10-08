@@ -852,8 +852,6 @@ gateway:
   cron_store:
     unwritable: "⚠️ Cron deposu {store} {since} tarihinden beri yazılamıyor ({error}). Yeniden yazma kabul edene kadar zamanlanmış işler atlanıyor. Çözüm: {fix}."
     recovered: "✅ Cron deposu {store} yeniden yazılabilir; {skipped} atlanan çalıştırma, her iş bir kez telafi edilecek."
-  whatsapp:
-    logged_out: "⚠️ WhatsApp bu cihazın oturumunu kapattı; ağ geçidi WhatsApp köprüsünü durdurdu ve yeniden denemiyor: WhatsApp'a gönderilen mesajlar ve zamanlanmış gönderimler başarısız oluyor. `hermes {profile_arg}whatsapp` ile yeniden eşleştirin (QR kodunu tarayın), ardından `hermes {profile_arg}gateway restart` çalıştırın."
   whoami:
     scope_dm: "DM"
     scope_group: "grup/kanal"
@@ -964,6 +962,7 @@ platform:
     approved: "✅ Onaylandı."
     denied: "❌ Reddedildi."
     approval_expired: "⌛ Onay süresi doldu — komut çalıştırılmadı (zaten zaman aşımına uğradı veya başka bir yerde sonuçlandı)."
+    logged_out: "⚠️ WhatsApp bu cihazın oturumunu kapattı; ağ geçidi WhatsApp köprüsünü durdurdu ve yeniden denemiyor: WhatsApp'a gönderilen mesajlar ve zamanlanmış gönderimler başarısız oluyor. `hermes {profile_arg}whatsapp` ile yeniden eşleştirin (QR kodunu tarayın), ardından `hermes {profile_arg}gateway restart` çalıştırın."
   yuanbao:
     slow_response_notice: "Bu görev biraz kapsamlı — hâlâ üzerinde çalışıyorum, lütfen bekleyin..."
     owner_command_denied: "⚠️ {command} yalnızca özel sohbet modunda oluşturucu tarafından kullanılabilir"

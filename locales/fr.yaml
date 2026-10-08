@@ -1016,8 +1016,6 @@ gateway:
   cron_store:
     unwritable: "⚠️ Le stockage cron {store} n'est plus accessible en écriture ({error}) depuis {since}. Les tâches planifiées sont ignorées jusqu'à ce qu'il accepte à nouveau les écritures. Correctif : {fix}."
     recovered: "✅ Le stockage cron {store} est de nouveau accessible en écriture ; {skipped} exécution(s) ignorée(s), chaque tâche est rattrapée une fois."
-  whatsapp:
-    logged_out: "⚠️ WhatsApp a déconnecté cet appareil : la passerelle a arrêté son pont WhatsApp et ne réessaie pas. Les messages et envois planifiés vers WhatsApp échouent. Réappairez avec `hermes {profile_arg}whatsapp` (scannez le code QR), puis lancez `hermes {profile_arg}gateway restart`."
   whoami:
     scope_dm: "MP"
     scope_group: "groupe/canal"
@@ -1155,6 +1153,7 @@ platform:
     approved: "✅ Approuvé."
     denied: "❌ Refusé."
     approval_expired: "⌛ Approbation expirée — la commande n'a pas été exécutée (délai dépassé ou déjà résolue ailleurs)."
+    logged_out: "⚠️ WhatsApp a déconnecté cet appareil : la passerelle a arrêté son pont WhatsApp et ne réessaie pas. Les messages et envois planifiés vers WhatsApp échouent. Réappairez avec `hermes {profile_arg}whatsapp` (scannez le code QR), puis lancez `hermes {profile_arg}gateway restart`."
   yuanbao:
     slow_response_notice: "Cette tâche est un peu complexe — je m'en occupe encore, merci de patienter..."
     owner_command_denied: "⚠️ {command} n'est disponible que pour le créateur en mode discussion privée"

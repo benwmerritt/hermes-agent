@@ -852,8 +852,6 @@ gateway:
   cron_store:
     unwritable: "⚠️ Cron-winkel {store} is nie skryfbaar nie ({error}) sedert {since}. Geskeduleerde take word oorgeslaan totdat dit weer skryfwerk aanvaar. Regstelling: {fix}."
     recovered: "✅ Cron-winkel {store} is weer skryfbaar; {skipped} oorgeslane lopie(s), elke taak haal een keer in."
-  whatsapp:
-    logged_out: "⚠️ WhatsApp het hierdie toestel afgemeld, dus het die gateway sy WhatsApp-brug gestop en probeer nie weer nie: boodskappe en geskeduleerde stuur na WhatsApp misluk. Koppel weer met `hermes {profile_arg}whatsapp` (skandeer die QR-kode) en voer dan `hermes {profile_arg}gateway restart` uit."
   whoami:
     scope_dm: "privaatgesprek"
     scope_group: "groep/kanaal"
@@ -964,6 +962,7 @@ platform:
     approved: "✅ Goedgekeur."
     denied: "❌ Geweier."
     approval_expired: "⌛ Goedkeuring het verval — die opdrag is nie uitgevoer nie (reeds uitgetel of elders afgehandel)."
+    logged_out: "⚠️ WhatsApp het hierdie toestel afgemeld, dus het die gateway sy WhatsApp-brug gestop en probeer nie weer nie: boodskappe en geskeduleerde stuur na WhatsApp misluk. Koppel weer met `hermes {profile_arg}whatsapp` (skandeer die QR-kode) en voer dan `hermes {profile_arg}gateway restart` uit."
   yuanbao:
     slow_response_notice: "Hierdie taak is 'n bietjie omvattend — ek werk nog daaraan, hou asseblief aan..."
     owner_command_denied: "⚠️ {command} is slegs vir die skepper beskikbaar in privaatgesprek-modus"

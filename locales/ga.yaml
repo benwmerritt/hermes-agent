@@ -852,8 +852,6 @@ gateway:
   cron_store:
     unwritable: "⚠️ Níl stór cron {store} inscríofa ({error}) ó {since}. Táthar ag scipeáil jabanna sceidealaithe go dtí go nglacann sé le scríobh arís. Réiteach: {fix}."
     recovered: "✅ Tá stór cron {store} inscríofa arís; {skipped} rith scipeáilte, gach jab ag teacht suas uair amháin."
-  whatsapp:
-    logged_out: "⚠️ Logáil WhatsApp an gléas seo amach, mar sin stop an geata a dhroichead WhatsApp agus ní dhéanann sé iarracht arís: tá teachtaireachtaí agus seoltaí sceidealta chuig WhatsApp ag teip. Péireáil arís le `hermes {profile_arg}whatsapp` (scan an cód QR), ansin rith `hermes {profile_arg}gateway restart`."
   whoami:
     scope_dm: "DM"
     scope_group: "grúpa/cainéal"
@@ -964,6 +962,7 @@ platform:
     approved: "✅ Ceadaithe."
     denied: "❌ Diúltaithe."
     approval_expired: "⌛ Tá an cead imithe in éag — níor ritheadh an t-ordú (chuaigh sé thar am cheana nó réitíodh é in áit eile)."
+    logged_out: "⚠️ Logáil WhatsApp an gléas seo amach, mar sin stop an geata a dhroichead WhatsApp agus ní dhéanann sé iarracht arís: tá teachtaireachtaí agus seoltaí sceidealta chuig WhatsApp ag teip. Péireáil arís le `hermes {profile_arg}whatsapp` (scan an cód QR), ansin rith `hermes {profile_arg}gateway restart`."
   yuanbao:
     slow_response_notice: "Tá an tasc seo beagán casta — táim fós ag obair air, fan go fóill le do thoil..."
     owner_command_denied: "⚠️ Níl {command} ar fáil ach don chruthaitheoir i mód comhrá phríobháidigh"

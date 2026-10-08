@@ -5,7 +5,8 @@ Field incident: after WhatsApp removed the linked device, the bridge exited 1 on
 reconnect tick (~250 restarts a day, 8,837 "Logged out" log lines) while scheduled sends failed
 silently for weeks. The bridge now exits ``_BRIDGE_EXIT_LOGGED_OUT``; the adapter maps it to a
 non-retryable ``whatsapp_logged_out`` fatal (the runner drops non-retryable platforms instead of
-queueing them) and posts one re-pair notice to the profile's other home channels.
+queueing them) and posts one re-pair notice to the profile's other home channels, from a runner
+background task that waits for one to be live.
 """
 
 import asyncio
@@ -26,13 +27,21 @@ def _home(chat_id):
 
 
 def _runner(transports, served_homes=None):
-    """The runner surface the notice path reads: served home channels and the shared send helper."""
+    """The runner surface the notice path reads: served home channels, the shared send helper and
+    background tasks (kept in ``tasks`` so a test can await the notice)."""
+    tasks = []
     return SimpleNamespace(
-        _served_home_channel_transports=lambda: iter(transports),
+        _served_home_channel_transports=lambda: iter(list(transports)),
         _send_home_channel_message=AsyncMock(return_value=True),
         _served_profile_homes=served_homes or {},
         _stop_requested_by_signal=False,
+        _track_background_task=lambda coro: tasks.append(asyncio.ensure_future(coro)),
+        tasks=tasks,
     )
+
+
+async def _notices_settled(runner):
+    await asyncio.gather(*runner.tasks)
 
 
 def _make_adapter(runner):
@@ -72,6 +81,7 @@ async def test_logged_out_exit_at_runtime_is_terminal_and_alerts_other_home_chan
     adapter._bridge_process = _exited(_BRIDGE_EXIT_LOGGED_OUT)
 
     message = await adapter._check_managed_bridge_exit()
+    await _notices_settled(runner)
 
     assert adapter.fatal_error_code == "whatsapp_logged_out"
     assert adapter.fatal_error_retryable is False
@@ -85,6 +95,8 @@ async def test_logged_out_exit_at_runtime_is_terminal_and_alerts_other_home_chan
 
     # The poll loop and queued sends observe the same exit again: no second notice, no second teardown.
     assert await adapter._check_managed_bridge_exit() == message
+    await _notices_settled(runner)
+    assert len(runner.tasks) == 1
     send.assert_awaited_once()
     fatal_handler.assert_awaited_once()
 
@@ -100,7 +112,7 @@ async def test_generic_bridge_exit_stays_retryable_with_no_notice():
 
     assert adapter.fatal_error_code == "whatsapp_bridge_exited"
     assert adapter.fatal_error_retryable is True
-    runner._send_home_channel_message.assert_not_awaited()
+    assert runner.tasks == []
 
 
 @pytest.mark.asyncio
@@ -112,11 +124,61 @@ async def test_logged_out_exit_while_waiting_for_the_bridge_is_not_retried():
 
     with patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock):
         assert await adapter._wait_for_bridge() is False
+        await _notices_settled(runner)
 
     assert adapter.fatal_error_code == "whatsapp_logged_out"
     assert adapter.fatal_error_retryable is False
     runner._send_home_channel_message.assert_awaited_once()
     assert adapter._bridge_log_fh is None
+
+
+@pytest.mark.asyncio
+async def test_logged_out_notice_waits_for_another_home_channel_to_come_up():
+    """At startup the other platforms are published only after every connect finishes, so the
+    first attempt finds no channel; the notice is retried until Slack is live, then sent once."""
+    transports = []
+    runner = _runner(transports)
+    adapter = _make_adapter(runner)
+    adapter._bridge_process = _exited(_BRIDGE_EXIT_LOGGED_OUT)
+    slack_up = (None, Platform.SLACK, None, _home("C-OPS"), object())
+    retry_waits = []
+
+    async def bridge_or_retry_wait(seconds):
+        if seconds == 1:  # the /health poll
+            return
+        retry_waits.append(seconds)
+        if len(retry_waits) == 2:
+            transports.append(slack_up)
+
+    with patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", side_effect=bridge_or_retry_wait):
+        assert await adapter._wait_for_bridge() is False
+        await _notices_settled(runner)
+
+    assert len(retry_waits) == 2
+    runner._send_home_channel_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_pending_logged_out_notice_does_not_hold_up_the_fatal_handler():
+    """The runner's fatal handler tears the adapter down; a slow or failing notice must not delay it."""
+    runner = _runner([(None, Platform.SLACK, None, _home("C-OPS"), object())])
+    release = asyncio.Event()
+
+    async def slow_send(*_args):
+        await release.wait()
+        raise RuntimeError("slack is down")
+
+    runner._send_home_channel_message = AsyncMock(side_effect=slow_send)
+    adapter = _make_adapter(runner)
+    fatal_handler = AsyncMock()
+    adapter.set_fatal_error_handler(fatal_handler)
+    adapter._bridge_process = _exited(_BRIDGE_EXIT_LOGGED_OUT)
+
+    await adapter._check_managed_bridge_exit()
+
+    fatal_handler.assert_awaited_once()
+    assert not runner.tasks[0].done()
+    runner.tasks[0].cancel()
 
 
 class _LoggedOutAdapter(BasePlatformAdapter):
