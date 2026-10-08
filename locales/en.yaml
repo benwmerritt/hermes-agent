@@ -879,6 +879,8 @@ gateway:
   cron_store:
     unwritable: "⚠️ Cron store {store} is not writable ({error}) since {since}. Scheduled jobs are being skipped until it accepts writes again. Fix: {fix}."
     recovered: "✅ Cron store {store} is writable again; {skipped} skipped run(s), catching up once per job."
+  whatsapp:
+    logged_out: "⚠️ WhatsApp logged this device out, so the gateway stopped its WhatsApp bridge and is not retrying: messages and scheduled sends to WhatsApp are failing. Re-pair with `hermes {profile_arg}whatsapp` (scan the QR code), then run `hermes {profile_arg}gateway restart`."
 
   whoami:
     scope_dm: "DM"

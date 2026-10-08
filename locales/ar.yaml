@@ -852,6 +852,8 @@ gateway:
   cron_store:
     unwritable: "⚠️ مخزن cron ‏{store} غير قابل للكتابة ({error}) منذ {since}. يتم تخطي المهام المجدولة حتى يقبل الكتابة مجددًا. الحل: {fix}."
     recovered: "✅ مخزن cron ‏{store} قابل للكتابة مجددًا؛ {skipped} تشغيل/تشغيلات متخطاة، وستُعوَّض كل مهمة مرة واحدة."
+  whatsapp:
+    logged_out: "⚠️ سجّل WhatsApp خروج هذا الجهاز، لذا أوقفت البوابة جسر WhatsApp ولن تعيد المحاولة: الرسائل والإرسالات المجدولة إلى WhatsApp تفشل. أعد الاقتران عبر `hermes {profile_arg}whatsapp` (امسح رمز QR)، ثم شغّل `hermes {profile_arg}gateway restart`."
   whoami:
     scope_dm: "رسالة خاصة"
     scope_group: "مجموعة/قناة"

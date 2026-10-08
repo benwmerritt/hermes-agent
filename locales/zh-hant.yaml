@@ -852,6 +852,8 @@ gateway:
   cron_store:
     unwritable: "⚠️ Cron 儲存區 {store} 自 {since} 起無法寫入（{error}）。在恢復可寫入之前，排程工作將被略過。修復方式：{fix}。"
     recovered: "✅ Cron 儲存區 {store} 已恢復可寫入；略過了 {skipped} 次執行，每個工作將補執行一次。"
+  whatsapp:
+    logged_out: "⚠️ WhatsApp 已將此裝置登出，閘道已停止 WhatsApp 橋接且不會重試：傳送到 WhatsApp 的訊息與排程傳送正在失敗。請用 `hermes {profile_arg}whatsapp` 重新配對（掃描 QR code），然後執行 `hermes {profile_arg}gateway restart`。"
   whoami:
     scope_dm: "私訊"
     scope_group: "群組／頻道"

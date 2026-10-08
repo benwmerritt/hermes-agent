@@ -852,6 +852,8 @@ gateway:
   cron_store:
     unwritable: "⚠️ El almacén de cron {store} no admite escritura ({error}) desde {since}. Las tareas programadas se omiten hasta que vuelva a aceptar escrituras. Solución: {fix}."
     recovered: "✅ El almacén de cron {store} vuelve a admitir escritura; {skipped} ejecución(es) omitida(s), cada tarea se recupera una vez."
+  whatsapp:
+    logged_out: "⚠️ WhatsApp cerró la sesión de este dispositivo, así que el gateway detuvo su puente de WhatsApp y no reintenta: los mensajes y envíos programados a WhatsApp están fallando. Vuelve a vincular con `hermes {profile_arg}whatsapp` (escanea el código QR) y luego ejecuta `hermes {profile_arg}gateway restart`."
   whoami:
     scope_dm: "MD"
     scope_group: "grupo/canal"

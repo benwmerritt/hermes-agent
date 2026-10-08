@@ -852,6 +852,8 @@ gateway:
   cron_store:
     unwritable: "⚠️ L'archivio cron {store} non è scrivibile ({error}) dal {since}. I job pianificati vengono saltati finché non accetta di nuovo scritture. Soluzione: {fix}."
     recovered: "✅ L'archivio cron {store} è di nuovo scrivibile; {skipped} esecuzione/i saltata/e, ogni job viene recuperato una volta."
+  whatsapp:
+    logged_out: "⚠️ WhatsApp ha disconnesso questo dispositivo, quindi il gateway ha fermato il suo bridge WhatsApp e non riprova: i messaggi e gli invii programmati verso WhatsApp stanno fallendo. Riassocia con `hermes {profile_arg}whatsapp` (scansiona il codice QR), poi esegui `hermes {profile_arg}gateway restart`."
   whoami:
     scope_dm: "DM"
     scope_group: "gruppo/canale"

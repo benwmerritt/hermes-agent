@@ -697,6 +697,38 @@ export function createReconnectScheduler(startFn, {
 }
 
 /**
+ * Reconnect delay policy for the close handler. WhatsApp closes unofficial
+ * clients in bursts (428 connectionClosed, 503 unavailableService), and a
+ * fixed 3 s retry answered every one at the same bot-like cadence: 66–81
+ * reconnects between pairings in the field, each pairing ending in the
+ * server removing the device. Consecutive closes double the wait (±25%
+ * jitter, capped at maxMs); a connection that then stays open for stableMs
+ * counts as recovered, so the next close starts over at baseMs.
+ */
+export function createReconnectBackoff({
+  baseMs = 3000,
+  maxMs = 5 * 60 * 1000,
+  stableMs = 60 * 1000,
+  random = Math.random,
+  now = Date.now,
+} = {}) {
+  let closes = 0;
+  let openedAt = null;
+  return {
+    noteOpen() {
+      openedAt = now();
+    },
+    nextDelayMs() {
+      if (openedAt !== null && now() - openedAt >= stableMs) closes = 0;
+      openedAt = null;
+      const delay = Math.min(baseMs * 2 ** Math.min(closes, 20), maxMs);
+      closes += 1;
+      return Math.min(maxMs, Math.round(delay * (0.75 + random() * 0.5)));
+    },
+  };
+}
+
+/**
  * Version resolution guard. fetchLatestBaileysVersion() is a plain fetch to
  * raw.githubusercontent.com with no AbortSignal; a stalled connection can
  * pend forever and wedge the reconnect path (the scheduler above cannot

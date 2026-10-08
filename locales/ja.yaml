@@ -852,6 +852,8 @@ gateway:
   cron_store:
     unwritable: "⚠️ cron ストア {store} は {since} から書き込みできません（{error}）。書き込みが可能になるまで、スケジュール済みジョブはスキップされます。対処: {fix}。"
     recovered: "✅ cron ストア {store} は再び書き込み可能になりました。スキップされた実行 {skipped} 件、各ジョブは 1 回だけ追いつき実行されます。"
+  whatsapp:
+    logged_out: "⚠️ WhatsApp がこのデバイスをログアウトさせたため、ゲートウェイは WhatsApp ブリッジを停止し、再試行しません。WhatsApp へのメッセージと予約送信は失敗しています。`hermes {profile_arg}whatsapp` で再ペアリングし（QR コードをスキャン）、その後 `hermes {profile_arg}gateway restart` を実行してください。"
   whoami:
     scope_dm: "DM"
     scope_group: "グループ/チャンネル"

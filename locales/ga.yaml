@@ -852,6 +852,8 @@ gateway:
   cron_store:
     unwritable: "⚠️ Níl stór cron {store} inscríofa ({error}) ó {since}. Táthar ag scipeáil jabanna sceidealaithe go dtí go nglacann sé le scríobh arís. Réiteach: {fix}."
     recovered: "✅ Tá stór cron {store} inscríofa arís; {skipped} rith scipeáilte, gach jab ag teacht suas uair amháin."
+  whatsapp:
+    logged_out: "⚠️ Logáil WhatsApp an gléas seo amach, mar sin stop an geata a dhroichead WhatsApp agus ní dhéanann sé iarracht arís: tá teachtaireachtaí agus seoltaí sceidealta chuig WhatsApp ag teip. Péireáil arís le `hermes {profile_arg}whatsapp` (scan an cód QR), ansin rith `hermes {profile_arg}gateway restart`."
   whoami:
     scope_dm: "DM"
     scope_group: "grúpa/cainéal"

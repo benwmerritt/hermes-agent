@@ -852,6 +852,8 @@ gateway:
   cron_store:
     unwritable: "⚠️ Cron-Speicher {store} ist seit {since} nicht beschreibbar ({error}). Geplante Jobs werden übersprungen, bis er wieder Schreibzugriffe annimmt. Lösung: {fix}."
     recovered: "✅ Cron-Speicher {store} ist wieder beschreibbar; {skipped} übersprungene Ausführung(en), jeder Job wird einmal nachgeholt."
+  whatsapp:
+    logged_out: "⚠️ WhatsApp hat dieses Gerät abgemeldet. Das Gateway hat seine WhatsApp-Bridge gestoppt und versucht es nicht erneut: Nachrichten und geplante Sendungen an WhatsApp schlagen fehl. Neu koppeln mit `hermes {profile_arg}whatsapp` (QR-Code scannen), dann `hermes {profile_arg}gateway restart` ausführen."
   whoami:
     scope_dm: "Direktnachricht"
     scope_group: "Gruppe/Kanal"

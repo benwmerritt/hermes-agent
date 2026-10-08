@@ -1016,6 +1016,8 @@ gateway:
   cron_store:
     unwritable: "⚠️ Le stockage cron {store} n'est plus accessible en écriture ({error}) depuis {since}. Les tâches planifiées sont ignorées jusqu'à ce qu'il accepte à nouveau les écritures. Correctif : {fix}."
     recovered: "✅ Le stockage cron {store} est de nouveau accessible en écriture ; {skipped} exécution(s) ignorée(s), chaque tâche est rattrapée une fois."
+  whatsapp:
+    logged_out: "⚠️ WhatsApp a déconnecté cet appareil : la passerelle a arrêté son pont WhatsApp et ne réessaie pas. Les messages et envois planifiés vers WhatsApp échouent. Réappairez avec `hermes {profile_arg}whatsapp` (scannez le code QR), puis lancez `hermes {profile_arg}gateway restart`."
   whoami:
     scope_dm: "MP"
     scope_group: "groupe/canal"

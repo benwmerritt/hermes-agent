@@ -852,6 +852,8 @@ gateway:
   cron_store:
     unwritable: "⚠️ O armazenamento do cron {store} não aceita gravação ({error}) desde {since}. Os trabalhos agendados estão sendo ignorados até que volte a aceitar gravações. Correção: {fix}."
     recovered: "✅ O armazenamento do cron {store} voltou a aceitar gravação; {skipped} execução(ões) ignorada(s), cada trabalho será recuperado uma vez."
+  whatsapp:
+    logged_out: "⚠️ O WhatsApp desconectou este dispositivo, então o gateway parou a ponte do WhatsApp e não tenta novamente: mensagens e envios agendados para o WhatsApp estão falhando. Pareie novamente com `hermes {profile_arg}whatsapp` (leia o código QR) e depois execute `hermes {profile_arg}gateway restart`."
   whoami:
     scope_dm: "DM"
     scope_group: "grupo/canal"

@@ -852,6 +852,8 @@ gateway:
   cron_store:
     unwritable: "⚠️ Сховище cron {store} недоступне для запису ({error}) з {since}. Заплановані завдання пропускаються, доки запис знову не стане можливим. Виправлення: {fix}."
     recovered: "✅ Сховище cron {store} знову доступне для запису; пропущено запусків: {skipped}, кожне завдання буде виконано один раз."
+  whatsapp:
+    logged_out: "⚠️ WhatsApp вийшов із цього пристрою, тому шлюз зупинив міст WhatsApp і не повторює спроби: повідомлення та заплановані надсилання у WhatsApp не доставляються. Прив'яжіть знову через `hermes {profile_arg}whatsapp` (відскануйте QR-код), потім виконайте `hermes {profile_arg}gateway restart`."
   whoami:
     scope_dm: "DM"
     scope_group: "група/канал"

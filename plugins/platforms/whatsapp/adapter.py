@@ -21,6 +21,9 @@ from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 from hermes_constants import (find_node_executable, get_hermes_dir, with_hermes_node_path)
 
 _IS_WINDOWS = platform.system() == "Windows"
+# bridge.js EXIT_LOGGED_OUT: WhatsApp revoked the linked device. The saved session can never reconnect, so
+# this exit is not retried; only a re-pair (`hermes whatsapp`) recovers it.
+_BRIDGE_EXIT_LOGGED_OUT = 77
 
 
 def _wenv(name: str, default: str = "") -> str:
@@ -525,12 +528,20 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         bridge_env.update(HERMES_IMAGE_CACHE_DIR=str(img_dir), HERMES_AUDIO_CACHE_DIR=str(audio_dir), HERMES_DOCUMENT_CACHE_DIR=str(doc_dir))
         return bridge_env
 
-    def _bridge_died(self, detail: str, code: str = "whatsapp_bridge_exited") -> bool:
+    def _bridge_died(self, detail: str, code: str = "whatsapp_bridge_exited", *, retryable: bool = True) -> bool:
         print(f"[{self.name}] {detail}")
         print(f"[{self.name}] Check log: {self._bridge_log}")
         self._close_bridge_log()
         # Named so the reconnect status and connect telemetry say why instead of an unclassified failure.
-        self._set_fatal_error(code, f"{detail} (see {self._bridge_log})", retryable=True)
+        self._set_fatal_error(code, f"{detail} (see {self._bridge_log})", retryable=retryable)
+        return False
+
+    async def _bridge_exit_during_connect(self, returncode: int, died_msg: str) -> bool:
+        """A managed bridge exit while waiting for it: logged out is permanent (no retry, operator told), else retryable."""
+        if returncode != _BRIDGE_EXIT_LOGGED_OUT:
+            return self._bridge_died(died_msg.format(code=returncode))
+        self._bridge_died(self._logged_out_message(), "whatsapp_logged_out", retryable=False)
+        await self._alert_logged_out()
         return False
 
     async def _poll_bridge_health(self, died_msg: str) -> tuple[Optional[bool], bool, dict]:
@@ -539,8 +550,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         data: dict = {}
         for attempt in range(15):
             await asyncio.sleep(1)
-            if self._bridge_process.poll() is not None:
-                return self._bridge_died(died_msg.format(code=self._bridge_process.returncode)), http_ready, data
+            if (returncode := self._bridge_process.poll()) is not None:
+                return await self._bridge_exit_during_connect(returncode, died_msg), http_ready, data
             try:
                 ok, d = await self._probe_bridge_health()
                 if ok:
@@ -726,12 +737,38 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             logger.info("[%s] Bridge exited during shutdown (code %d).", self.name, returncode)
             return None
         message = f"WhatsApp bridge process exited unexpectedly (code {returncode})."
+        logged_out = returncode == _BRIDGE_EXIT_LOGGED_OUT
+        if logged_out:
+            message = self._logged_out_message()
         if not self.has_fatal_error:
             logger.error("[%s] %s", self.name, message)
-            self._set_fatal_error("whatsapp_bridge_exited", message, retryable=True)
+            # Not retryable: the runner drops the platform instead of respawning the bridge against a dead
+            # session (~250 restarts a day, each one another "Logged out" line and nobody told).
+            self._set_fatal_error("whatsapp_logged_out" if logged_out else "whatsapp_bridge_exited", message,
+                                  retryable=not logged_out)
             self._close_bridge_log()
+            if logged_out:
+                # Before the handler: it tears this adapter down and cancels the poll task carrying us.
+                await self._alert_logged_out()
             await self._notify_fatal_error()
         return self.fatal_error_message or message
+
+    def _logged_out_message(self) -> str:
+        from agent.i18n import t
+        from hermes_constants import profile_cli_selector
+        return t("gateway.whatsapp.logged_out", profile_arg=profile_cli_selector())
+
+    async def _alert_logged_out(self) -> None:
+        """One notice per logout to this profile's other home channels: WhatsApp cannot carry it and nothing retries."""
+        runner = getattr(self, "gateway_runner", None)  # tests build the adapter via ``__new__``
+        if runner is None:
+            return
+        from gateway.platform_attention_notices import send_platform_attention_notice
+        delivered = await send_platform_attention_notice(
+            runner, platform=self.platform, profile_home=self._profile_home, render_message=self._logged_out_message)
+        if not delivered:
+            logger.warning("[%s] No other home channel could carry the logged-out notice; re-pair with `hermes whatsapp`.",
+                           self.name)
 
     def _terminate_bridge(self, *, force: bool) -> None:
         try:

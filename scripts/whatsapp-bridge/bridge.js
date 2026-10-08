@@ -36,6 +36,7 @@ import { classifyOwnerMessageGate } from './owner_message_gate.js';
 import {
   addMentions,
   buildPollPayload,
+  createReconnectBackoff,
   createReconnectScheduler,
   createVersionResolver,
   installConsoleStamps,
@@ -386,7 +387,13 @@ function emitPairEvent(event) {
 }
 
 const scheduleReconnect = createReconnectScheduler(() => startSocket());
+const reconnectBackoff = createReconnectBackoff();
 const getWAVersion = createVersionResolver(fetchLatestBaileysVersion);
+
+// WhatsApp revoked this linked device: the saved session can never reconnect, only a re-pair can.
+// A distinct exit code lets the gateway stop respawning the bridge (a generic exit is retried
+// forever — ~250 restarts a day with nobody told). Mirrored by adapter.py _BRIDGE_EXIT_LOGGED_OUT.
+const EXIT_LOGGED_OUT = 77;
 
 async function startSocket() {
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
@@ -432,23 +439,26 @@ async function startSocket() {
       if (reason === DisconnectReason.loggedOut) {
         emitPairEvent({ event: 'error', error: 'logged_out', reason });
         if (!PAIR_JSON) {
-          console.log('❌ Logged out. Delete session and restart to re-authenticate.');
+          console.log('❌ WhatsApp logged this device out. Re-pair with `hermes whatsapp`, then restart the gateway.');
         }
-        process.exit(1);
+        process.exit(EXIT_LOGGED_OUT);
       } else {
-        // 515 = restart requested (common after pairing). Always reconnect.
+        // 515 = restart requested (common after pairing): reconnect at once. Anything else backs
+        // off, so a server that keeps closing us sees a client that waits rather than a hammer.
         emitPairEvent({ event: 'disconnected', reason });
+        const delayMs = reason === 515 ? 1000 : reconnectBackoff.nextDelayMs();
         if (!PAIR_JSON) {
           if (reason === 515) {
             console.log('↻ WhatsApp requested restart (code 515). Reconnecting...');
           } else {
-            console.log(`⚠️  Connection closed (reason: ${reason}). Reconnecting in 3s...`);
+            console.log(`⚠️  Connection closed (reason: ${reason}). Reconnecting in ${Math.round(delayMs / 1000)}s...`);
           }
         }
-        scheduleReconnect(reason === 515 ? 1000 : 3000);
+        scheduleReconnect(delayMs);
       }
     } else if (connection === 'open') {
       connectionState = 'connected';
+      reconnectBackoff.noteOpen();
       const connectedUser = sock?.user
         ? {
             id: sock.user.id || null,
