@@ -962,6 +962,7 @@ platform:
     approved: "✅ 已批准。"
     denied: "❌ 已拒絕。"
     approval_expired: "⌛ 批准已逾期 — 指令未執行（已逾時或已在其他地方處理）。"
+    logged_out: "⚠️ WhatsApp 已將此裝置登出，閘道已停止 WhatsApp 橋接且不會重試：傳送到 WhatsApp 的訊息與排程傳送正在失敗。請用 `hermes {profile_arg}whatsapp` 重新配對（掃描 QR code），然後執行 `hermes {profile_arg}gateway restart`。"
   yuanbao:
     slow_response_notice: "這個任務比較複雜 — 仍在處理中，請稍候..."
     owner_command_denied: "⚠️ {command} 僅限建立者在私聊模式下使用"

@@ -962,6 +962,7 @@ platform:
     approved: "✅ Aprovado."
     denied: "❌ Negado."
     approval_expired: "⌛ Aprovação expirada — o comando não foi executado (já excedeu o tempo limite ou foi resolvido em outro lugar)."
+    logged_out: "⚠️ O WhatsApp desconectou este dispositivo, então o gateway parou a ponte do WhatsApp e não tenta novamente: mensagens e envios agendados para o WhatsApp estão falhando. Pareie novamente com `hermes {profile_arg}whatsapp` (leia o código QR) e depois execute `hermes {profile_arg}gateway restart`."
   yuanbao:
     slow_response_notice: "Esta tarefa é um pouco complexa — ainda estou trabalhando nela, aguarde um momento..."
     owner_command_denied: "⚠️ {command} só está disponível para o criador no modo de chat privado"

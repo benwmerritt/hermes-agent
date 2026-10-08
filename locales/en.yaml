@@ -1007,6 +1007,7 @@ platform:
     approved: "✅ Approved."
     denied: "❌ Denied."
     approval_expired: "⌛ Approval expired — command was not run (already timed out or resolved elsewhere)."
+    logged_out: "⚠️ WhatsApp logged this device out, so the gateway stopped its WhatsApp bridge and is not retrying: messages and scheduled sends to WhatsApp are failing. Re-pair with `hermes {profile_arg}whatsapp` (scan the QR code), then run `hermes {profile_arg}gateway restart`."
   yuanbao:
     slow_response_notice: "This task is a bit involved — still working on it, please hang on..."
     owner_command_denied: "⚠️ {command} is only available to the creator in private chat mode"
