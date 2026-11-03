@@ -225,7 +225,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 logger.debug("Skipping skill at %s: failed to parse: %s", skill_md, e, exc_info=True)
     for entry in skills:
         candidates = _narrow_candidates(entry["name"], candidates_by_name[entry["name"]], project_dirs, dirs_to_scan)
-        if len(candidates) > 1 and not _provably_same_skill(candidates):
+        if len(candidates) > 1:
             handles = _collision_handles(candidates, project_dirs, dirs_to_scan)
             entry["load_as"] = handles["load_as"]
             if handles.get("rename_required"):

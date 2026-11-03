@@ -1211,3 +1211,19 @@ def test_listing_respects_project_precedence(tmp_path, monkeypatch):
     listed = next(s for s in json.loads(skills_list())["skills"] if s["name"] == "deploy")
     assert "load_as" not in listed and "rename_required" not in listed
     assert "PROJECT" in json.loads(skill_view("deploy"))["content"]
+
+
+def test_listing_advertises_identical_skills_ambiguous_across_roots(tmp_path, monkeypatch):
+    local, external = tmp_path / "local", tmp_path / "external"
+    local.mkdir()
+    external.mkdir()
+    _make_skill(local, "deploy", category="alpha", body="IDENTICAL")
+    _make_skill(external, "deploy", category="beta", body="IDENTICAL")
+    monkeypatch.setattr(skills_tool_module, "_skill_search_dirs", lambda: ([], [local, external], local))
+    skills_tool_module._SKILLS_CACHE.clear()
+    listed = next(s for s in json.loads(skills_list())["skills"] if s["name"] == "deploy")
+    refused = json.loads(skill_view("deploy"))
+    assert refused["success"] is False
+    assert sorted(listed["load_as"]) == sorted(refused["load_as"]) == ["alpha/deploy", "beta/deploy"]
+    for handle in listed["load_as"]:
+        assert json.loads(skill_view(handle))["success"] is True
