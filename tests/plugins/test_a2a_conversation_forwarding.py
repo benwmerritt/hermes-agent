@@ -83,3 +83,42 @@ def test_authenticated_context_collision_cannot_misdeliver_replies(tmp_path, mon
     config.a2a_conversation_only_peers.append("gromit")
     assert adapter._history_context_id("gromit", "same/context") != old_context
     store.close_all_db_handles()
+
+
+def test_forwarded_context_key_has_fixed_size_and_preserves_identity(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = a2a.A2AAdapter(PlatformConfig(enabled=True))
+    adapter.set_session_store(SimpleNamespace(config=GatewayConfig()))
+    monkeypatch.setattr(a2a, "_profile_home", lambda _: str(tmp_path))
+    titles = []
+    def state(profile, sql, params, *args, **kwargs):
+        if sql.startswith("SELECT id FROM sessions WHERE title"):
+            titles.append(params[0])
+        return ""
+    monkeypatch.setattr(a2a, "_state_db", state)
+    monkeypatch.setattr(a2a.subprocess, "run", Mock(return_value=SimpleNamespace(returncode=0, stdout="ok")))
+    route = {"profile": "other", "slug": "other", "local": False}
+    for peer, context in (("gromit", "x" * 900_000), ("gromit", "x" * 900_000 + "y"), ("other", "x" * 900_000)):
+        assert adapter._forward_to_profile(route, peer, context, "hello")[1] == protocol.STATE_COMPLETED
+    assert len(set(titles)) == 3
+    assert all(len(title) < 100 for title in titles)
+    assert all(len(key[2]) == 64 for key in adapter._profile_session_locks)
+
+
+def test_local_history_uses_protocol_context_id_and_refuses_ambiguous_scopes(tmp_path, monkeypatch):
+    from plugins.platforms.a2a.tools import a2a_history, a2a_list
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = a2a.A2AAdapter(PlatformConfig(enabled=True))
+    config = GatewayConfig(a2a_conversation_only_peers=["alfred"])
+    adapter.set_session_store(SimpleNamespace(config=config))
+    context_id = "shared:context/☃"
+    protocol.persist_message(adapter._history_context_id("alfred", context_id), "user", "ALFRED")
+    assert "ALFRED" in a2a_history({"context_id": context_id})
+    assert context_id in a2a_list()
+    protocol.persist_message(adapter._history_context_id("gromit", context_id), "user", "GROMIT")
+    assert "Ambiguous" in a2a_history({"context_id": context_id})
+    assert "GROMIT" not in a2a_history({"context_id": context_id, "peer": "alfred"})
+    config.a2a_conversation_only_peers.clear()
+    protocol.persist_message(adapter._history_context_id("alfred", context_id), "user", "NEW_POLICY")
+    assert "Ambiguous" in a2a_history({"context_id": context_id, "peer": "alfred"})
+    assert "NEW_POLICY" not in a2a_history({"context_id": context_id, "peer": "alfred", "policy_mode": "restricted"})

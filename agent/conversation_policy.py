@@ -26,6 +26,8 @@ def require_conversation_transport(restricted, provider=None, api_mode=None, bas
 
 
 def check_agent_transport(agent, **route):
+    if getattr(agent, "conversation_only", False) and getattr(agent, "_is_anthropic_oauth", False):
+        raise ValueError("Anthropic OAuth identity is disabled for conversation-only agents")
     require_conversation_transport(
         getattr(agent, "conversation_only", False),
         **{key: route.get(key, getattr(agent, key, None)) for key in ("provider", "api_mode", "base_url")},

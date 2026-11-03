@@ -244,3 +244,55 @@ def test_real_conversation_loop_denies_provider_tool_call(tmp_path, monkeypatch)
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+@pytest.mark.parametrize("persistent", [False, True])
+def test_restricted_compaction_shrinks_history_without_auxiliary_or_memory_callbacks(tmp_path, monkeypatch, persistent):
+    from run_agent import AIAgent
+    from agent import context_compressor, conversation_compression
+    from hermes_cli import plugins
+    from hermes_cli.plugins import PluginContext
+    from hermes_cli.plugins_manifest import PluginManifest
+    monkeypatch.chdir(tmp_path)
+    manager = plugins.PluginManager()
+    monkeypatch.setattr(plugins, "_plugin_manager", manager)
+    callbacks = []
+    ctx = PluginContext(PluginManifest(name="compression-sentinel"), manager)
+    for name in ("pre_auxiliary_call", "post_auxiliary_call", "on_session_end", "on_session_start", "on_session_finalize"):
+        ctx.register_hook(name, lambda **kwargs: callbacks.append(kwargs))
+    from agent import auxiliary_client
+    forbidden = Mock(side_effect=AssertionError("restricted compaction callback"))
+    monkeypatch.setattr(auxiliary_client, "get_text_auxiliary_client", forbidden)
+    from hermes_state import SessionDB
+    db = SessionDB(tmp_path / "compression.db") if persistent else None
+    if db:
+        db.create_session("restricted", source="a2a")
+    agent = AIAgent(provider="custom", base_url="https://example.invalid/v1", api_key="test-key",
+                    model="test", conversation_only=True, quiet_mode=True, save_trajectories=False,
+                    session_db=db, session_id="restricted")
+    monkeypatch.setattr(context_compressor, "call_llm", forbidden)
+    monkeypatch.setattr(agent, "commit_memory_session", forbidden)
+    agent.event_callback = forbidden
+    agent._cached_system_prompt = agent._build_system_prompt(None)
+    agent._memory_manager = Mock(on_pre_compress=forbidden, on_session_switch=forbidden)
+    messages = [{"role": "system", "content": agent._cached_system_prompt}]
+    messages.extend({"role": "user" if i % 2 == 0 else "assistant", "content": f"turn {i} " + "garden plans " * 800}
+                    for i in range(50))
+    if db:
+        for message in messages:
+            db.append_message("restricted", role=message["role"], content=message["content"])
+        agent._session_db_created = True
+    try:
+        assert agent.compression_enabled
+        compressed, prompt = conversation_compression.compress_context(agent, messages, agent._cached_system_prompt, force=True)
+        assert len(str(compressed)) < len(str(messages)) // 2
+        assert agent.context_compressor.compression_count == 1
+        assert prompt == agent._build_system_prompt(None)
+        assert callbacks == []
+        forbidden.assert_not_called()
+    finally:
+        agent._memory_manager = None
+        agent.event_callback = None
+        agent.close()
+        if db:
+            db.close()

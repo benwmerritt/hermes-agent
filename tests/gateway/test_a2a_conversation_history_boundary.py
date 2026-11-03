@@ -178,3 +178,39 @@ def test_background_turn_does_not_adopt_gateway_prefill(tmp_path, monkeypatch):
         source = SessionSource(platform=platform, user_id=peer, chat_id="ctx")
         asyncio.run(runner._run_background_task_inner("hi", source, f"task-{peer}"))
     assert seen == [(False, []), (False, []), (True, [])]
+
+
+def test_proxy_route_refuses_restricted_peer_before_remote_call():
+    from gateway.run_turn import GatewayTurnMixin
+    runner = GatewayTurnMixin()
+    runner.config = GatewayConfig(a2a_conversation_only_peers=["alfred"])
+    runner._get_proxy_url = lambda: "https://example.invalid"
+    runner._run_agent_via_proxy = AsyncMock(return_value={"final_response": "ordinary"})
+    source = SessionSource(platform=Platform("a2a"), user_id="alfred", chat_id="ctx")
+    result = asyncio.run(runner._run_agent_inner("hello", "private", [], source, "s"))
+    assert "disabled" in result["final_response"]
+    runner._run_agent_via_proxy.assert_not_awaited()
+    source.user_id = "gromit"
+    assert asyncio.run(runner._run_agent_inner("hello", "", [], source, "s"))["final_response"] == "ordinary"
+    runner._run_agent_via_proxy.assert_awaited_once()
+
+
+def test_resume_without_origin_uses_platform_and_reads_db_outside_lock(tmp_path, monkeypatch):
+    store = SessionStore(tmp_path / "sessions", GatewayConfig())
+    try:
+        source = SessionSource(platform=Platform.DISCORD, user_id="ben", chat_id="c")
+        entry = store.get_or_create_session(source)
+        entry.origin = None
+        store._db.create_session("target", source="discord")
+        assert store.switch_session(entry.session_key, "target") is not None
+        a2a_source = SessionSource(platform=Platform("a2a"), user_id="alfred", chat_id="c")
+        restricted = store.get_or_create_session(a2a_source)
+        restricted.origin = None
+        get_session = store._db.get_session
+        def unlocked_get(sid):
+            assert not store._lock.locked()
+            return get_session(sid)
+        monkeypatch.setattr(store._db, "get_session", unlocked_get)
+        assert store.switch_session(restricted.session_key, "target") is None
+    finally:
+        store.close_all_db_handles()

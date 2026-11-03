@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -589,7 +590,7 @@ class A2AAdapter(BasePlatformAdapter):
             return "Profile forwarding is disabled for conversation-only peers.", protocol.STATE_REJECTED
         profile = str(agent.get("profile") or agent.get("slug") or "").strip()
         slug = str(agent.get("slug") or profile or "agent")
-        safe_ctx = json.dumps([peer, slug, context_id], ensure_ascii=True, separators=(",", ":")).encode().hex()
+        safe_ctx = hashlib.sha256(json.dumps([peer, slug, context_id], ensure_ascii=True, separators=(",", ":")).encode()).hexdigest()
         session_title = f"a2a-v2-unrestricted-{safe_ctx}"
         key = (profile or "default", slug, safe_ctx)
         timeout = int(agent.get("timeout") or _reply_timeout())

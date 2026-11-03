@@ -1481,6 +1481,8 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     """
     from agent.opencode_affinity import merge_session_affinity_headers
 
+    from agent.conversation_policy import check_agent_transport
+    check_agent_transport(agent)
     restricted = bool(getattr(agent, "conversation_only", False))
     kwargs = _build_api_kwargs_for_mode(agent, api_messages, [] if restricted else tools_for_api)
     if restricted:

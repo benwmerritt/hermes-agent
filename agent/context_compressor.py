@@ -3804,6 +3804,14 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         memory_context: str = "", bypass_cooldown: bool = False,
     ) -> Optional[str]:
         """Structured summary of the turns (iterative update when a previous summary exists); None if all attempts fail."""
+        if getattr(self, "conversation_only", False):
+            if self._compression_cancelled():
+                raise AuxiliaryExplicitCancellation()
+            summary = self._build_static_fallback_summary(turns_to_summarize)
+            from agent.conversation_compression import _raise_if_stale_attempt
+            _raise_if_stale_attempt(self)
+            self._previous_summary = summary
+            return summary
         prompt_started_at = time.monotonic()
         if self._compression_cancelled():
             raise AuxiliaryExplicitCancellation()
@@ -5076,7 +5084,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             # Head handoff already lives in _previous_summary: strip it (standalone dropped, merged
             # keeps prior-tail text). Merged rows hold real user text — never blanket-skip.
             msg = _fresh_compaction_message_copy(messages[i])
-            if i == 0 and msg.get("role") == "system":
+            if i == 0 and msg.get("role") == "system" and not getattr(self, "conversation_only", False):
                 existing = msg.get("content")
                 if self._COMPRESSION_NOTE not in _content_text_for_contains(existing):
                     sep = "\n\n" if isinstance(existing, str) and existing else ""

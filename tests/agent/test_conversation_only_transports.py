@@ -241,3 +241,20 @@ def test_provider_client_seams_and_wire_tools_obey_policy(monkeypatch, restricte
             check_agent_transport(agent, api_mode="plugin_native_process")
     else:
         check_agent_transport(agent, api_mode="plugin_native_process")
+
+
+def test_anthropic_oauth_identity_rejected_on_restricted_requests(tmp_path, monkeypatch):
+    from run_agent import AIAgent
+    from agent.chat_completion_helpers import build_api_kwargs
+    monkeypatch.chdir(tmp_path)
+    agent = AIAgent(provider="custom", base_url="https://example.invalid/v1", api_key="test-key",
+                    model="test", conversation_only=True, quiet_mode=True)
+    try:
+        agent.api_mode = "anthropic_messages"
+        agent._is_anthropic_oauth = True
+        with pytest.raises(ValueError, match="Anthropic OAuth identity"):
+            build_api_kwargs(agent, [{"role": "user", "content": "hello"}])
+        agent._is_anthropic_oauth = False
+        assert build_api_kwargs(agent, [{"role": "user", "content": "hello"}])
+    finally:
+        agent.close()

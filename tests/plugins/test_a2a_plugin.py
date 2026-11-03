@@ -1662,8 +1662,9 @@ print('fake reply')
         con = sqlite3.connect(db)
         title = con.execute("SELECT title FROM sessions WHERE id='sess-1'").fetchone()[0]
         con.close()
-        encoded_identity = title.removeprefix("a2a-v2-unrestricted-")
-        assert json.loads(bytes.fromhex(encoded_identity)) == ["peer", agent["slug"], "ctx/unsafe value"]
+        import hashlib
+        identity = json.dumps(["peer", agent["slug"], "ctx/unsafe value"], ensure_ascii=True, separators=(",", ":"))
+        assert title == "a2a-v2-unrestricted-" + hashlib.sha256(identity.encode()).hexdigest()
 
 
 # --------------------------------------------------------------------------

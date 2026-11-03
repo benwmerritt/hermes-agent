@@ -209,10 +209,11 @@ def a2a_list(args: dict | None = None, **_: Any) -> str:
                          + (f" caps: {', '.join(caps)}" if caps else ""))
     else:
         lines.append("No peers configured. Add them under 'a2a_agents' in config.yaml.")
-    if convos := protocol.list_conversations():
+    if convos := protocol.conversation_references():
         lines.append("")
         lines.append(f"Persisted conversations ({len(convos)}) — recall with a2a_history:")
-        lines.extend(f"  - {c}" for c in convos[:25])
+        lines.extend(f"  - {c['context_id']}" + (f" (peer={c['peer']}, policy_mode={c['policy_mode']})" if c["peer"] else "")
+                     for c in convos[:25])
     m = protocol.metrics.snapshot()
     lines.append("")
     lines.append(f"Metrics: {m['inbound_total']} in / {m['outbound_total']} out, {m['tasks_completed']} completed, "
@@ -227,7 +228,16 @@ def a2a_history(args: dict, **_: Any) -> str:
     if not context_id:
         return "Error: 'context_id' is required (see a2a_list for known conversations)."
     limit = max(1, min(_coerce_int(args.get("limit") or 50, 50), 200))
-    messages = protocol.load_conversation(context_id, limit=limit)
+    matches = [ref for ref in protocol.conversation_references()
+               if ref["context_id"] == context_id
+               and (not args.get("peer") or ref["peer"] == args["peer"])
+               and (not args.get("policy_mode") or ref["policy_mode"] == args["policy_mode"])]
+    if len(matches) > 1:
+        return "Ambiguous context_id. Select the peer and policy_mode shown by a2a_list."
+    if not matches and (args.get("peer") or args.get("policy_mode")):
+        return f"No persisted conversation for context '{context_id}' in that peer/policy scope."
+    storage_id = matches[0]["storage_id"] if matches else context_id
+    messages = protocol.load_conversation(storage_id, limit=limit)
     if not messages:
         return f"No persisted conversation for context '{context_id}'."
     lines = [f"Conversation {context_id} (last {len(messages)} messages):"]
@@ -313,6 +323,9 @@ _TOOLS: dict[str, tuple[Any, str, dict, list[str]]] = {
                     "Recall a persisted A2A conversation transcript by context_id (survives restarts and "
                     "context compaction). Use a2a_list to see known context ids.",
                     {"context_id": _str("Context id of the conversation to recall."),
+                     "peer": _str("Peer from a2a_list, required when the context ID is ambiguous."),
+                     "policy_mode": {"type": "string", "enum": ["restricted", "unrestricted"],
+                                     "description": "Policy from a2a_list when a context has multiple histories."},
                      "limit": {"type": "integer", "description": "Max messages to return (default 50, max 200)."}},
                     ["context_id"]),
     "a2a_orchestrate": (a2a_orchestrate,

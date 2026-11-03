@@ -1204,6 +1204,8 @@ class SessionStore(
         the key no longer points at that session, so a caller that resolved against a snapshot
         across an await (async-delegation re-pin) cannot overwrite a concurrent /new or /resume.
         """
+        db = self._db_for_key(session_key)
+        target = db.get_session(target_session_id) if db else None
         with self._lock:
             old_entry = self._entry_locked(session_key)
             if old_entry is None:
@@ -1214,9 +1216,8 @@ class SessionStore(
                     session_key, expected_session_id, old_entry.session_id,
                 )
                 return None
-            if old_entry.origin.platform.value == "a2a":
-                db = self._db_for_key(session_key)
-                target = db.get_session(target_session_id) if db else None
+            platform = old_entry.platform or getattr(old_entry.origin, "platform", None)
+            if getattr(platform, "value", platform) == "a2a":
                 if not target or target.get("session_key") != session_key:
                     return None
             if old_entry.session_id == target_session_id:

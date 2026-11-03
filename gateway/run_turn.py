@@ -4205,6 +4205,8 @@ class GatewayTurnMixin:
 
         Keys: "final_response", "messages", "api_calls", "completed"."""
         if self._get_proxy_url():
+            if self._is_conversation_only_peer(source):
+                return self._proxy_error_result("Proxy routing is disabled for conversation-only peers.")
             return await self._run_agent_via_proxy(
                 message=message, context_prompt=context_prompt, history=history, source=source,
                 session_id=session_id, session_key=session_key, run_generation=run_generation,

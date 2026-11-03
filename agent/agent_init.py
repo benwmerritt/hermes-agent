@@ -1935,7 +1935,7 @@ def _build_conversation_only_context_engine(agent):
         model=agent.model, quiet_mode=True, base_url=agent.base_url, conversation_only=True,
         api_key=getattr(agent, "api_key", ""), provider=agent.provider, api_mode=agent.api_mode,
     )
-    agent.compression_enabled = False
+    agent.compression_enabled = True
     agent.compression_in_place = True
     agent.tools = []
     agent.valid_tool_names = set()
@@ -2471,6 +2471,7 @@ def init_agent(
     _setup_logging(agent)
     _set_defaults(agent, _STREAM_STATE)
     _build_client(agent, api_key, base_url, fallback_model)
+    check_agent_transport(agent)
     _init_fallback_chain(agent, fallback_model)
     _load_tools(agent, enabled_toolsets, disabled_toolsets)
     _init_session_state(
@@ -2520,7 +2521,7 @@ def init_agent(
         agent._memory_manager = None
         agent._memory_enabled = False
         agent._user_profile_enabled = False
-        agent.compression_enabled = False
+        agent.compression_enabled = True
     else:
         _inject_context_engine_tools(agent)
     _init_usage_state(agent)

@@ -471,6 +471,27 @@ def list_conversations() -> list[str]:
     return sorted(p.stem for p in (get_hermes_home() / "a2a_conversations").glob("*.jsonl"))
 
 
+def conversation_references() -> list[dict]:
+    """Map isolated storage names back to protocol context IDs for local history tools."""
+    refs = []
+    for storage_id in list_conversations():
+        ref = {"storage_id": storage_id, "context_id": storage_id, "peer": "", "policy_mode": ""}
+        for mode in ("restricted", "unrestricted"):
+            prefix = f"a2a-v2-{mode}-"
+            if not storage_id.startswith(prefix):
+                continue
+            try:
+                identity = json.loads(bytes.fromhex(storage_id[len(prefix):]))
+            except (ValueError, UnicodeError):
+                break
+            if (isinstance(identity, list) and len(identity) == 2
+                    and all(isinstance(part, str) for part in identity)):
+                ref.update(peer=identity[0], context_id=identity[1], policy_mode=mode)
+            break
+        refs.append(ref)
+    return refs
+
+
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
 # Names external plugins imported from this module before the Sep 2026 decomposition.
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
