@@ -976,6 +976,7 @@ platform:
     approved: "✅ Jóváhagyva."
     denied: "❌ Elutasítva."
     approval_expired: "⌛ A jóváhagyás lejárt — a parancs nem futott le (időtúllépés, vagy máshol már eldőlt)."
+    logged_out: "⚠️ A WhatsApp kijelentkeztette ezt az eszközt, ezért az átjáró leállította a WhatsApp-hidat, és nem próbálkozik újra: a WhatsAppra küldött üzenetek és ütemezett küldések sikertelenek. Párosítsd újra a `hermes {profile_arg}whatsapp` paranccsal (olvasd be a QR-kódot), majd futtasd: `hermes {profile_arg}gateway restart`."
   yuanbao:
     slow_response_notice: "Ez a feladat kicsit összetettebb — még dolgozom rajta, kis türelmet..."
     owner_command_denied: "⚠️ A(z) {command} privát csevegés módban csak a létrehozó számára érhető el"

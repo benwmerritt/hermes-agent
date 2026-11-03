@@ -293,6 +293,16 @@ class GatewayAdapterLifecycleMixin:
         value = getattr(getattr(self, "config", None), "on_all_adapters_down", None)
         return value if value in ON_ALL_ADAPTERS_DOWN_POLICIES else "exit"
 
+    def _any_platform_served(self) -> bool:
+        """A live adapter or a pending reconnect on ANY served profile. ``self.adapters`` and
+        ``_failed_platforms`` are the launch profile's alone: a secondary's live adapters sit in
+        ``_profile_adapters`` and its reconnects in ``_profile_failed_platforms``."""
+        return bool(
+            self.adapters or self._failed_platforms
+            or any(self._profile_adapters.values())
+            or any((self._profile_failed_platforms or {}).values())
+        )
+
     async def _handle_adapter_fatal_error_detached(self, adapter: BasePlatformAdapter) -> None:
         """Run the fatal handler; a platform left stranded (not reconnected, not queued, not
         intentionally disabled) exits the gateway with failure so the service manager restarts it."""
@@ -400,7 +410,9 @@ class GatewayAdapterLifecycleMixin:
             # Populate the queue first so the reconnect watcher always has work; teardown is best-effort
             # after.
             await self._safe_adapter_disconnect(adapter, adapter.platform)
-        if not self.adapters and not self._failed_platforms:
+        # Every served profile counts: a logout on the launch profile's only platform must not stop
+        # a gateway whose other platforms live under secondary profiles.
+        if not self._any_platform_served():
             if adapter.fatal_error_retryable and self._on_all_adapters_down() == "stay_alive":
                 # No supervising service manager to revive the process (#118080): stay alive and
                 # keep serving cron / api_server / dashboard while the reconnect watcher owns

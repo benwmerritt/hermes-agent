@@ -962,6 +962,7 @@ platform:
     approved: "✅ 承認しました。"
     denied: "❌ 拒否しました。"
     approval_expired: "⌛ 承認の有効期限が切れました — コマンドは実行されませんでした（すでにタイムアウトしたか、別の場所で処理済みです）。"
+    logged_out: "⚠️ WhatsApp がこのデバイスをログアウトさせたため、ゲートウェイは WhatsApp ブリッジを停止し、再試行しません。WhatsApp へのメッセージと予約送信は失敗しています。`hermes {profile_arg}whatsapp` で再ペアリングし（QR コードをスキャン）、その後 `hermes {profile_arg}gateway restart` を実行してください。"
   yuanbao:
     slow_response_notice: "このタスクは少し手間がかかります — 処理を続けていますので、しばらくお待ちください..."
     owner_command_denied: "⚠️ {command} はプライベートチャットモードで作成者のみが使用できます"

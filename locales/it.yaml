@@ -962,6 +962,7 @@ platform:
     approved: "✅ Approvato."
     denied: "❌ Negato."
     approval_expired: "⌛ Approvazione scaduta — il comando non è stato eseguito (timeout già scattato o risolto altrove)."
+    logged_out: "⚠️ WhatsApp ha disconnesso questo dispositivo, quindi il gateway ha fermato il suo bridge WhatsApp e non riprova: i messaggi e gli invii programmati verso WhatsApp stanno fallendo. Riassocia con `hermes {profile_arg}whatsapp` (scansiona il codice QR), poi esegui `hermes {profile_arg}gateway restart`."
   yuanbao:
     slow_response_notice: "Questa attività è un po' impegnativa — ci sto ancora lavorando, attendi un attimo..."
     owner_command_denied: "⚠️ {command} è disponibile solo per il creatore in modalità chat privata"

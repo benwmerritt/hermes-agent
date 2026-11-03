@@ -962,6 +962,7 @@ platform:
     approved: "✅ Genehmigt."
     denied: "❌ Abgelehnt."
     approval_expired: "⌛ Genehmigung abgelaufen — Befehl wurde nicht ausgeführt (Zeitüberschreitung oder bereits anderswo entschieden)."
+    logged_out: "⚠️ WhatsApp hat dieses Gerät abgemeldet. Das Gateway hat seine WhatsApp-Bridge gestoppt und versucht es nicht erneut: Nachrichten und geplante Sendungen an WhatsApp schlagen fehl. Neu koppeln mit `hermes {profile_arg}whatsapp` (QR-Code scannen), dann `hermes {profile_arg}gateway restart` ausführen."
   yuanbao:
     slow_response_notice: "Diese Aufgabe ist etwas aufwendiger — ich arbeite noch daran, bitte einen Moment Geduld..."
     owner_command_denied: "⚠️ {command} ist im privaten Chatmodus nur für den Ersteller verfügbar"
