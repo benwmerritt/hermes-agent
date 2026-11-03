@@ -186,7 +186,7 @@ def build_error_surface_from_result(result: Any, provider: str = "", model: str 
 
 
 def build_error_surface_from_exception(
-    exc: BaseException, provider: str = "", model: str = "", api_key: Any = None,
+    exc: BaseException, provider: str = "", model: str = "", api_key: Any = None, *, conversation_only: bool = False,
 ) -> Optional[dict]:
     """Descriptor for an exception that escaped the turn dispatcher.
 
@@ -203,7 +203,7 @@ def build_error_surface_from_exception(
 
         from agent.error_classifier import classify_api_error
 
-        classified = classify_api_error(exc, provider=provider, model=model, api_key=api_key)
+        classified = classify_api_error(exc, provider=provider, model=model, api_key=api_key, conversation_only=conversation_only)
         synthetic = {"error": classified.message or message, "failure_reason": classified.reason.value}
         from agent.agent_runtime_helpers import extract_api_error_context
         from agent.credential_pool import _parse_absolute_timestamp

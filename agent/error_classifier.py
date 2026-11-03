@@ -951,6 +951,7 @@ def classify_api_error(
     approx_tokens: int = 0, context_length: int = 200000, num_messages: int = 0,
     base_url: str = "",
     api_key: Any = None,
+    conversation_only: bool = False,
 ) -> ClassifiedError:
     """Classify an API error into a structured recovery recommendation (see ``_STAGES``).
 
@@ -969,7 +970,9 @@ def classify_api_error(
         approx_tokens, context_length, num_messages, str(base_url or ""),
         anonymous=is_anonymous_request(provider, api_key),
     )
-    verdict = next((v for v in (stage(c) for stage in _STAGES) if v is not None), _V_UNKNOWN)
+    stages = (tuple(stage for stage in _STAGES if stage not in (_plugin_verdict, _profile_verdict))
+              if conversation_only else _STAGES)
+    verdict = next((v for v in (stage(c) for stage in stages) if v is not None), _V_UNKNOWN)
     message = _extract_message(error, body)
     if verdict["reason"] in (_R.auth, _R.auth_permanent):
         # An auth refusal from a non-stock route names the host, so a credential posted to the

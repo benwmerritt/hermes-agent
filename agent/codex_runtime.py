@@ -506,6 +506,8 @@ def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -
     Only the FIRST session of an AIAgent resumes the stored codex thread: a retired/recreated one keeps
     today's fresh-thread behaviour and overwrites the binding once its turn is committed. ``messages`` is the
     turn's transcript (current user row last); a thread started from scratch is seeded with the prior turns."""
+    from agent.conversation_policy import check_agent_transport
+    check_agent_transport(agent, api_mode="codex_app_server")
     developer_instructions = _codex_developer_instructions(agent)
     if getattr(agent, "_codex_session", None) is not None:
         # Only a session whose recorded composition differs is stale; one attached without a record is kept.

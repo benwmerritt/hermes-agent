@@ -165,6 +165,8 @@ class ApiRequestHooksMixin:
         max_retries: Optional[int] = None, retryable: Optional[bool] = None,
         reason: Optional[str] = None,
     ) -> None:
+        if getattr(self, "conversation_only", False):
+            return
         # Lazy module import (not from-import) so tests can replace lifecycle dispatch at this call site.
         with suppress(Exception):
             from hermes_cli import lifecycle as _lifecycle

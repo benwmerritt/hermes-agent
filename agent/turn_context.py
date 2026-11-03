@@ -164,6 +164,8 @@ _UNTITLED_PLATFORMS = frozenset({"cron", "subagent"})
 
 def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
     """Kick off auto-titling for the session's first user message; never fatal."""
+    if getattr(agent, "conversation_only", False):
+        return
     session_db = getattr(agent, "_session_db", None)
     session_id = getattr(agent, "session_id", None)
     if not session_db or not session_id:
@@ -512,6 +514,10 @@ def _refresh_mcp_tools_between_turns(agent: Any) -> None:
     """Late-connecting MCP servers land in THIS turn's snapshot, before the first API
     call assembles ``tools=``. ``preserve_prefix`` keeps the tool array append-only so a
     flapping ``check_fn`` can't fork the cache."""
+    if getattr(agent, "conversation_only", False):
+        agent.tools = []
+        agent.valid_tool_names = set()
+        return
     try:
         # An authorization that committed after its connection card closed: same import-cost gate,
         # the module is loaded only in a process that ran a connection operation.
@@ -995,6 +1001,8 @@ def build_turn_context(
     compression."""
     from agent.turn_context_compaction import run_turn_start_compaction
 
+    conversation_only = bool(getattr(agent, "conversation_only", False))
+
     # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
     install_safe_stdio()
 
@@ -1064,7 +1072,7 @@ def build_turn_context(
 
     # Preserve the original user message (no nudge injection).
     original_user_message = persist_user_message if persist_user_message is not None else user_message
-    should_review_memory = _tick_memory_nudge(agent)
+    should_review_memory = False if conversation_only else _tick_memory_nudge(agent)
     _emit_reaction(agent, original_user_message)
 
     if not agent.quiet_mode:
@@ -1083,7 +1091,8 @@ def build_turn_context(
     try:
         from tools.bot_mode_dm import ensure_message_agent_tool
 
-        ensure_message_agent_tool(agent)
+        if not conversation_only:
+            ensure_message_agent_tool(agent)
     except Exception:
         logger.debug("message_agent injection skipped", exc_info=True)
 
@@ -1111,17 +1120,21 @@ def build_turn_context(
     conversation_history = compaction.conversation_history
     current_turn_user_idx = compaction.current_turn_user_idx
 
-    plugin_user_context = _collect_pre_llm_call_context(
-        agent, effective_task_id=effective_task_id, turn_id=turn_id,
-        original_user_message=original_user_message, messages=messages,
-        conversation_history=conversation_history,
-    )
-    plugin_user_context = _merge_gateway_notes(
-        agent, messages, current_turn_user_idx, plugin_user_context
-    )
+    if conversation_only:
+        plugin_user_context = ""
+        ext_prefetch_cache = ""
+    else:
+        plugin_user_context = _collect_pre_llm_call_context(
+            agent, effective_task_id=effective_task_id, turn_id=turn_id,
+            original_user_message=original_user_message, messages=messages,
+            conversation_history=conversation_history,
+        )
+        plugin_user_context = _merge_gateway_notes(
+            agent, messages, current_turn_user_idx, plugin_user_context
+        )
 
     _bind_interrupt_scope(agent, ra)
-    ext_prefetch_cache = _memory_turn_start_and_prefetch(agent, original_user_message, turn_author)
+    ext_prefetch_cache = "" if conversation_only else _memory_turn_start_and_prefetch(agent, original_user_message, turn_author)
 
     # Title the session now: titling depends only on the user's ask (before any injected
     # context lands on list content), so it runs concurrently with the turn. Daemon thread,
@@ -1216,6 +1229,8 @@ def build_api_messages(
         # (strict OpenAI backends reject unknown keys); _row_id is the durable row id
         # from _rows_to_conversation and only chat-completions strips underscore keys.
         _api_content = api_msg.pop("api_content", None)
+        if getattr(agent, "conversation_only", False):
+            _api_content = None
         for key in ("display_kind", "display_metadata", "_row_id"):
             api_msg.pop(key, None)
 

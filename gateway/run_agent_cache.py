@@ -95,7 +95,7 @@ class GatewayAgentCacheMixin:
     def _agent_config_signature(
         model: str, runtime: dict, enabled_toolsets: list, ephemeral_prompt: str,
         cache_keys: dict | None = None, user_id: str | None = None, user_id_alt: str | None = None,
-        skip_context_files: bool = False,
+        skip_context_files: bool = False, conversation_only: bool = False,
     ) -> str:
         """Stable key from agent config: change → cached AIAgent rebuilt; unchanged → reused (frozen
         prompt + schemas for cache hits). ``user_id`` / ``user_id_alt`` participate because Honcho
@@ -130,6 +130,7 @@ class GatewayAgentCacheMixin:
                 # skip_context_files changes the agent's frozen system prompt (context files in vs out):
                 # a toggled edit must rebuild the cached agent, not silently reuse it.
                 bool(skip_context_files),
+                bool(conversation_only),
             ],
             sort_keys=True, default=str,
         )
@@ -493,7 +494,8 @@ class GatewayAgentCacheMixin:
         interrupt_for_session(
             session_key=session_key, reason=invalidation_reason,
             parent_session_id=str(getattr(running_agent, "session_id", "") or ""))
-        if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+        if (running_agent and running_agent is not _AGENT_PENDING_SENTINEL
+                and not getattr(running_agent, "conversation_only", False)):
             # Plugins holding a per-turn external resource (an outbound RPC blocked on a tool result
             # the loop will never consume) learn the turn is gone. Fires for /stop and the /new
             # running-agent fast path; the pending-sentinel /stop has no in-flight work, so it stays

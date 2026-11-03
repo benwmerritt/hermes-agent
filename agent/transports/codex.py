@@ -309,7 +309,7 @@ def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
         # endpoints the transport cannot know (a custom relay, a catalog-driven router), never
         # for a ``custom:`` entry that merely points at api.openai.com.
         declared = None
-        if not (is_codex_backend or _is_openai_api_origin(base_url)):
+        if not (is_codex_backend or _is_openai_api_origin(base_url) or params.get("conversation_only")):
             declared = _profile_declared_efforts(params.get("provider"), model, base_url)
         supported = declared if declared is not None else _codex_efforts_for_route(
             model, base_url, is_codex_backend=is_codex_backend)
@@ -657,7 +657,7 @@ class ResponsesApiTransport(ProviderTransport):
         Codex header; cache-scope fallback), cache_scope_id (rotation-stable scope for the
         cache key / xAI conv header), max_tokens, timeout, request_overrides, provider, base_url,
         is_github_responses, is_codex_backend, is_xai_responses, github_reasoning_extra,
-        context_management, replay_encrypted_reasoning.
+        context_management, replay_encrypted_reasoning, conversation_only (skip provider-profile callbacks).
 
         params: instructions: str — system prompt (extracted from messages[0] if not given)
         reasoning_config: dict | None — {effort, enabled} session_id: str | None — transcript/session id;

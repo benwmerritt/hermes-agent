@@ -321,9 +321,9 @@ class TaskStore:
         return {"configId": rec.get("push_config_id") or "", "taskId": rec["task_id"],
                 "createdAt": rec.get("created_iso", ""), "pushNotificationConfig": {"url": rec.get("push_url") or ""}}
 
-    def create(self, task_id: str, context_id: str, peer: str, agent_slug: str = "", tenant: str = "") -> dict:
+    def create(self, task_id: str, context_id: str, peer: str, agent_slug: str = "", tenant: str = "", *, policy_mode: str = "unrestricted") -> dict:
         rec = {"task_id": task_id, "context_id": context_id, "peer": peer, "agent_slug": agent_slug or "", "tenant": tenant or "",
-               "state": STATE_SUBMITTED, "reply": "", "created_at": time.time(), "created_iso": now_iso(), "push_url": "", "push_config_id": ""}
+               "policy_mode": policy_mode, "state": STATE_SUBMITTED, "reply": "", "created_at": time.time(), "created_iso": now_iso(), "push_url": "", "push_config_id": ""}
         with self._lock:
             self._tasks[task_id] = rec
         return dict(rec)
@@ -394,13 +394,15 @@ class TaskStore:
             return fut
 
     def list(self, context_id: str = "", state: str = "", page_size: int = 50, offset: int = 0,
-             agent_slug: str = "", tenant: str = "", with_total: bool = False):
+             agent_slug: str = "", tenant: str = "", with_total: bool = False, *, peer: Optional[str] = None, policy_mode: Optional[str] = None):
         """Filtered task page (newest first) as ``(records, next_offset)``, or
         ``(records, next_offset, total)`` with ``with_total`` (v1.0 ListTasks totalSize)."""
         page_size = max(1, min(int(page_size or 50), 100))
         with self._lock:
             recs = [dict(r) for r in reversed(self._tasks.values())
                     if self._in_scope(r, agent_slug, tenant)
+                    and (peer is None or (bool(peer) and r.get("peer") == peer))
+                    and (policy_mode is None or r.get("policy_mode") == policy_mode)
                     and (not context_id or r["context_id"] == context_id) and (not state or r["state"] == state)]
         total = len(recs)
         page = recs[offset:offset + page_size]
@@ -467,6 +469,27 @@ def load_conversation(context_id: str, limit: int = 50) -> list[dict]:
 def list_conversations() -> list[str]:
     """Context-ids that have persisted conversations."""
     return sorted(p.stem for p in (get_hermes_home() / "a2a_conversations").glob("*.jsonl"))
+
+
+def conversation_references() -> list[dict]:
+    """Map isolated storage names back to protocol context IDs for local history tools."""
+    refs = []
+    for storage_id in list_conversations():
+        ref = {"storage_id": storage_id, "context_id": storage_id, "peer": "", "policy_mode": ""}
+        for mode in ("restricted", "unrestricted"):
+            prefix = f"a2a-v2-{mode}-"
+            if not storage_id.startswith(prefix):
+                continue
+            try:
+                identity = json.loads(bytes.fromhex(storage_id[len(prefix):]))
+            except (ValueError, UnicodeError):
+                break
+            if (isinstance(identity, list) and len(identity) == 2
+                    and all(isinstance(part, str) for part in identity)):
+                ref.update(peer=identity[0], context_id=identity[1], policy_mode=mode)
+            break
+        refs.append(ref)
+    return refs
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

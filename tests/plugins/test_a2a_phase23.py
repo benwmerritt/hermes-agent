@@ -546,7 +546,7 @@ class TestTaskStore:
 
     def test_watchdog_cannot_race_local_finalization(self, monkeypatch):
         adapter, _base = _make_live_adapter(monkeypatch)
-        rec = adapter.tasks.create("t-live", "c1", "peer")
+        rec = adapter.tasks.create("t-live", "c1", "peer", policy_mode=adapter._policy_mode("peer"))
         adapter.tasks.set_state("t-live", protocol.STATE_WORKING)
         adapter.tasks._tasks["t-live"]["created_at"] = time.time() - 700
         future = adapter._add_pending("t-live", "c1")
@@ -584,7 +584,7 @@ class TestTaskStore:
 
     def test_stream_disconnect_releases_active_request(self, monkeypatch):
         adapter, _base = _make_live_adapter(monkeypatch)
-        rec = adapter.tasks.create("t-live", "c1", "peer")
+        rec = adapter.tasks.create("t-live", "c1", "peer", policy_mode=adapter._policy_mode("peer"))
         adapter.tasks.set_state("t-live", protocol.STATE_WORKING)
         pending = {
             "task_id": "t-live", "context_id": "c1", "peer": "peer",

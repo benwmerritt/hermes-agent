@@ -159,6 +159,8 @@ def is_compaction_progress_status(text: str | None) -> bool:
 def _refresh_agent_tool_definitions(agent) -> bool:
     """Rebuild agent.tools at the compaction commit boundary (the only moment config reaches a forever-session's
     frozen tool schemas; the prompt cache is already invalid). Returns True when tools were added."""
+    if getattr(agent, "conversation_only", False):
+        return False
     from tools.mcp_tool_agent import refresh_agent_mcp_tools
     added = refresh_agent_mcp_tools(agent, content_aware=True)
     if added:
@@ -2048,7 +2050,7 @@ def check_compression_model_feasibility(agent: Any) -> None:
     """Warn at session start if the aux compression context is below the threshold.
     Called from ``AIAgent.__init__`` (CLI sees it via ``_vprint``); the gateway wires ``status_callback``
     later, so ``replay_compression_warning`` resends it."""
-    if not agent.compression_enabled:
+    if getattr(agent, "conversation_only", False) or not agent.compression_enabled:
         return
     try:
         from agent.auxiliary_client import (
@@ -2918,6 +2920,8 @@ def _pre_compress_memory_context(agent: Any, messages: list, checkpoint_required
     Raw messages stay the API v1 provider contract; normalized evidence goes only to API v2+ checkpoint
     providers inside MemoryManager.on_pre_compress(). Raises :class:`CompressionCheckpointUnavailable` when a
     required checkpoint cannot be taken."""
+    if getattr(agent, "conversation_only", False):
+        return ""
     memory_context = ""
     memory_manager = getattr(agent, "_memory_manager", None)
     evidence_messages = _direct_messages_for_pre_compress_memory(messages)
@@ -3414,7 +3418,8 @@ def _finish_compaction_boundary(
 
     # Plugin engines use boundary_reason="compression" to keep lineage/checkpoint
     # state. Fires in BOTH modes: in-place passes the same id, the boundary is real.
-    if session_commit_succeeded and (bool(_old_sid) or compacted_in_place):
+    if (not getattr(agent, "conversation_only", False)
+            and session_commit_succeeded and (bool(_old_sid) or compacted_in_place)):
         notify = (
             _queue_context_engine_compression_notification
             if defer_context_engine_notification
@@ -3425,7 +3430,7 @@ def _finish_compaction_boundary(
     # Providers refresh cached per-session state; reset=False, conversation goes on.
     # Fires in BOTH modes so buffers don't double-count dropped turns in-place.
     with _swallow('memory manager on_session_switch (compression): %s'):
-        if (bool(_old_sid) or in_place) and agent._memory_manager:
+        if not getattr(agent, "conversation_only", False) and (bool(_old_sid) or in_place) and agent._memory_manager:
             agent._memory_manager.on_session_switch(
                 agent.session_id or "", parent_session_id=_boundary_parent, reset=False, reason="compression"
             )
@@ -3443,7 +3448,7 @@ def _finish_compaction_boundary(
 
     # session:compress lets hooks ingest the old session before it's lost;
     # in_place=True tells them the same id was compacted rather than rotated.
-    if getattr(agent, "event_callback", None):
+    if not getattr(agent, "conversation_only", False) and getattr(agent, "event_callback", None):
         with _swallow('event_callback error on session:compress: %s'):
             agent.event_callback(
                 "session:compress",
@@ -3600,7 +3605,8 @@ def _commit_compaction(
         try:
             # Memory extraction runs in BOTH modes: pre-compaction turns are summarized
             # away whether or not the id rotates.
-            agent.commit_memory_session(messages)
+            if not getattr(agent, "conversation_only", False):
+                agent.commit_memory_session(messages)
 
             # Pop _compaction_tail tags before the size estimate / rotation: they must not
             # inflate anti-growth or reach the provider. Track ids: salvage may subset list.
@@ -4050,7 +4056,8 @@ def compress_context(
                 )
                 return messages, _existing_sp
         _warn_summary_or_aux_fallback(agent)
-        _fold_todo_snapshot(agent, compressed)
+        if not getattr(agent, "conversation_only", False):
+            _fold_todo_snapshot(agent, compressed)
         compressed_user_turn_outcome = _ensure_compressed_has_user_turn(messages, compressed)
         new_system_prompt = _rebuild_system_prompt_at_boundary(agent, system_message)
         commit = _commit_compaction(

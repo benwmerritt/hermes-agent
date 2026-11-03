@@ -27,6 +27,8 @@ from agent.surface_switch import _SURFACE_NAME_END, _SURFACE_SWITCH_NOTE_PREFIX,
 def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
     """Construct the minimal agent fake the helper needs."""
     agent = MagicMock()
+    # These tests exercise ordinary sessions, not the isolated peer path.
+    agent.conversation_only = False
     agent._cached_system_prompt = None
     agent.session_id = "test-session-id"
     agent.model = "test-model"

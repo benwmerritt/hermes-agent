@@ -1505,6 +1505,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     """Execute tool calls concurrently; results are appended in original call order.
     ``finalize=False`` skips end-of-batch budget enforcement and /steer injection (the
     segmented dispatcher owns turn-end work)."""
+    if getattr(agent, "conversation_only", False):
+        for call in assistant_message.tool_calls:
+            messages.append(make_tool_result_message(call.function.name, "Tool execution is disabled for this conversation.", getattr(call, "id", "")))
+        return
     tool_calls = assistant_message.tool_calls
     num_tools = len(tool_calls)
     _tool_budget = _budget_for_agent(agent)  # once per turn, not per result
@@ -1786,6 +1790,10 @@ def _execute_tool_calls_sequential(agent, assistant_message, messages: list, eff
     """Execute tool calls sequentially (single calls or interactive tools). ``finalize=False``
     skips end-of-batch budget enforcement and /steer injection (the segmented dispatcher
     owns turn-end work)."""
+    if getattr(agent, "conversation_only", False):
+        for call in assistant_message.tool_calls:
+            messages.append(make_tool_result_message(call.function.name, "Tool execution is disabled for this conversation.", getattr(call, "id", "")))
+        return
     _tool_budget = _budget_for_agent(agent)  # once per turn, not per result
     tool_calls = assistant_message.tool_calls
 

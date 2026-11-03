@@ -33,6 +33,7 @@ class _Agent:
         self._reasoning_effort_rejected = False
         self._reasoning_disable_rejected = False
         self._ollama_num_ctx: int | None = None
+        self.conversation_only = False
 
     def __getattr__(self, name):
         return lambda *args, **kwargs: None

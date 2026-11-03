@@ -48,6 +48,7 @@ def _make_turn():
 
 def _make_agent(session_db=None, session_id="sess-codex"):
     agent = MagicMock()
+    agent.conversation_only = False
     # Pre-seed the session so run_codex_app_server_turn skips the spawn block.
     agent._codex_session = MagicMock()
     agent._codex_session.run_turn.return_value = _make_turn()
