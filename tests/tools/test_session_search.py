@@ -1370,3 +1370,26 @@ class TestDiscoverySessionExclusion:
         excluded = json.loads(session_search(
             query="unique lineage token alpha", limit=5, exclude_session_ids=["s_child"], db=db))
         assert not {r["session_id"] for r in excluded["results"]} & {"s_root", "s_child"}
+
+
+@pytest.mark.parametrize("content", [42, 3.25, [{"type": "image_url", "image_url": {"url": "data:image/png;base64," + "x" * 2_000_000}}]])
+def test_read_and_scroll_bound_non_string_content(db, content):
+    db.create_session("non_string", source="cli")
+    mid = db.append_message("non_string", role="user", content=content)
+    db._conn.execute("UPDATE sessions SET title = 'serializedbudget' WHERE id = 'non_string'")
+    db._conn.commit()
+    discovery = json.loads(session_search(query="serializedbudget", db=db))
+    assert discovery["success"] is True and discovery["count"] == 1
+    assert len(json.dumps(discovery)) < 15_000
+    for options in ({}, {"around_message_id": mid, "window": 1}):
+        raw = session_search(session_id="non_string", db=db, **options)
+        result = json.loads(raw)
+        assert result["success"] is True
+        message = result["messages"][0]
+        assert isinstance(message["content"], str)
+        assert len(raw) < 10_000
+        if isinstance(content, list):
+            assert message["content_truncated"] is True
+            assert message["original_content_chars"] > 2_000_000
+        else:
+            assert message["content"] == str(content)

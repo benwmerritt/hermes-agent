@@ -76,7 +76,7 @@ class TestZeroMatchProbe:
         # matches/files/counts (credential stores, .env), without naming it or keeping the
         # pre-filter counts.
         d = proj / "proj"
-        (d / ".env").write_text("DENYLIST_PROBE_TOKEN=sk-live-should-never-leak\n")
+        (d / ".env").write_text("DENYLIST_PROBE_TOKEN=sk-live-should-never-leak\n" * 100)
         (d / ".notes").mkdir()
         (d / ".notes" / "todo.cfg").write_text("DENYLIST_PROBE_TOKEN mentioned here\n")
         mixed = json.loads(search_tool("DENYLIST_PROBE_TOKEN", path=str(d), task_id="t-zm-deny"))
@@ -86,7 +86,8 @@ class TestZeroMatchProbe:
         probe = mixed["zero_match"]
         assert probe["paths"] == [str(d / ".notes" / "todo.cfg")]
         assert probe["paths_omitted"] == 1 and probe["file_count"] == 1
-        assert probe["match_count_is_lower_bound"] is True
+        assert probe["match_count"] == 1
+        assert not probe.get("match_count_is_lower_bound")
         assert "todo.cfg" in mixed["warning"] and "1 hidden or gitignored file(s)" in mixed["warning"]
         assert mixed["_omitted"].startswith("1 result(s) omitted")
 

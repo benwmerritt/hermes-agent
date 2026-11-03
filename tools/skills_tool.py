@@ -196,7 +196,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
         # s["enabled"]/s["usage"]); handing out cached objects would poison the cache.
         return [dict(s) for s in cached[2]]
     skills = []
-    seen_names: Dict[str, Tuple[Dict[str, Any], Path]] = {}  # name -> (listed entry, its SKILL.md)
+    candidates_by_name: Dict[str, list] = {}
     for scan_dir in dirs_to_scan:  # project dirs go through the quarantine chokepoint
         _iter = iter_project_skill_files if scan_dir in project_dirs else lambda d: iter_skill_index_files(d, "SKILL.md")
         for skill_md in _iter(scan_dir):
@@ -209,16 +209,8 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 name = frontmatter.get("name", skill_md.parent.name)[:MAX_NAME_LENGTH]
                 if name in disabled:
                     continue
-                if name in seen_names:
-                    # First wins the listing; a DIFFERENT skill behind the same name would make the
-                    # bare name refuse in skill_view, so both sides are listed by loadable path.
-                    first, first_md = seen_names[name]
-                    if not _provably_same_skill([(None, first_md), (None, skill_md)]):
-                        handles = _collision_handles([(None, first_md), (None, skill_md)], project_dirs, dirs_to_scan)
-                        first.setdefault("load_as", [])
-                        first["load_as"].extend(h for h in handles["load_as"] if h not in first["load_as"])
-                        if handles.get("rename_required"):
-                            first["rename_required"] = True
+                candidates_by_name.setdefault(name, []).append((None, skill_md))
+                if len(candidates_by_name[name]) > 1:
                     continue
                 description = frontmatter.get("description", "")
                 if not description:  # first non-heading body line (a null value stays null)
@@ -226,12 +218,18 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                                         if ln and not ln.startswith("#")), description)
                 entry = {"name": name, "description": _truncate_description(description),
                          "category": _get_category_from_path(skill_md)}
-                seen_names[name] = (entry, skill_md)
                 skills.append(entry)
             except (UnicodeDecodeError, PermissionError) as e:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)
             except Exception as e:
                 logger.debug("Skipping skill at %s: failed to parse: %s", skill_md, e, exc_info=True)
+    for entry in skills:
+        candidates = _narrow_candidates(entry["name"], candidates_by_name[entry["name"]], project_dirs, dirs_to_scan)
+        if len(candidates) > 1 and not _provably_same_skill(candidates):
+            handles = _collision_handles(candidates, project_dirs, dirs_to_scan)
+            entry["load_as"] = handles["load_as"]
+            if handles.get("rename_required"):
+                entry["rename_required"] = True
     # Keyed by the signature computed BEFORE the scan: a write racing the scan changes the
     # signature, so the next call re-scans instead of serving a torn result.
     _SKILLS_CACHE[cache_key] = (signature, now, skills)

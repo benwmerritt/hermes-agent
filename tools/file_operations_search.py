@@ -641,14 +641,16 @@ class SearchMixin:
             probe_words = [rg, flags, "--count-matches", glob_expr_probe,
                            self._escape_shell_arg(pattern, translate_path=False), self._escape_native_tool_arg(path)]
             probe = self._run_rg_bounded(probe_words, 50, timeout=30)
-            total, per_file = 0, []
+            total, per_file = 0, {}
             for line in (probe.stdout or "").strip().splitlines():
                 p, _sep, n = line.rpartition(":")
                 if n.isdigit():
                     total += int(n)
-                    per_file.append(p)
+                    per_file[p] = int(n)
             if total > 0:
-                found = {"reason": reason, "match_count": total, "file_count": len(per_file), "paths": per_file[:5]}
+                found = {"reason": reason, "match_count": total, "file_count": len(per_file), "paths": list(per_file)[:5], "_file_counts": per_file}
+                if len(per_file) == 50:
+                    found["match_count_is_lower_bound"] = True
                 if findings is not None:
                     findings.update(found)
                 return zero_match_hint(found)

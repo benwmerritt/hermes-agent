@@ -1197,3 +1197,17 @@ class TestTrustWarningSymlinkAware:
             self._log("sym", root / "sym" / "SKILL.md", [root], root)
 
         assert "outside the trusted" in caplog.text, caplog.text
+
+
+def test_listing_respects_project_precedence(tmp_path, monkeypatch):
+    project, local, external = [tmp_path / name for name in ("project", "local", "external")]
+    for root in (project, local, external):
+        root.mkdir()
+    _make_skill(project, "deploy", body="PROJECT")
+    _make_skill(local, "deploy", body="LOCAL")
+    _make_skill(external, "deploy", body="EXTERNAL")
+    monkeypatch.setattr(skills_tool_module, "_skill_search_dirs", lambda: ([project], [project, local, external], local))
+    skills_tool_module._SKILLS_CACHE.clear()
+    listed = next(s for s in json.loads(skills_list())["skills"] if s["name"] == "deploy")
+    assert "load_as" not in listed and "rename_required" not in listed
+    assert "PROJECT" in json.loads(skill_view("deploy"))["content"]
