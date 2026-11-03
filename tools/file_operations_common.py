@@ -109,6 +109,10 @@ class SearchResult:
     truncated: bool = False
     limit_reason: Optional[str] = None
     warning: Optional[str] = None
+    # Structured twin of the zero-match ``warning`` (``reason``, ``match_count``,
+    # ``file_count``, ``paths``): absent on a true zero, so ``total_count == 0`` alone
+    # never has to be read as "nothing exists".
+    zero_match: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
 
     # Below this many matches the verbose array is already compact enough that
@@ -153,7 +157,7 @@ class SearchResult:
         if self.truncated:
             result["truncated"] = True
             result["total_count_is_lower_bound"] = True
-        for key in ("limit_reason", "warning", "error"):
+        for key in ("limit_reason", "warning", "zero_match", "error"):
             value = getattr(self, key)
             if value:
                 result[key] = value

@@ -252,6 +252,21 @@ def _filter_read_blocked_search_results(result, task_id: str = "default") -> int
         result.files = [f for f in result.files if _allowed(f)]
     if getattr(result, "counts", None):
         result.counts = {f: c for f, c in result.counts.items() if _allowed(f)}
+    probe = getattr(result, "zero_match", None)
+    if isinstance(probe, dict) and probe.get("paths"):
+        from tools.file_operations_search import zero_match_hint
+        old_hint = zero_match_hint(probe)
+        counts = probe.pop("_file_counts", {})
+        kept = {pth: count for pth, count in counts.items() if _allowed(pth)}
+        dropped = len(counts) - len(kept)
+        probe.update(paths=list(kept)[:5], file_count=len(kept), match_count=sum(kept.values()))
+        if dropped:
+            probe["paths_omitted"] = dropped
+        new_hint = zero_match_hint(probe) if kept else ""
+        if result.warning:
+            result.warning = result.warning.replace(old_hint, new_hint).strip() or None
+        if not kept:
+            result.zero_match = None
     return omitted
 
 
